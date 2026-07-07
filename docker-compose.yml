@@ -1,0 +1,14 @@
+services:
+  mongodb:
+    image: mongo:7
+    container_name: runner_mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - runner_mongo_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: runner_ai_v1
+    restart: unless-stopped
+
+volumes:
+  runner_mongo_data:
