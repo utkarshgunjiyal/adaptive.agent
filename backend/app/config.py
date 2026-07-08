@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     chunk_overlap: int = 150      # character overlap between chunks
     summary_max_chars: int = 1500  # cap on stub summary source text
 
+    # -- Context budget (Phase 4) --------------------------------------------
+    # Rough chars-per-token ratio used to enforce ContextPolicy.context_budget_tokens
+    # when assembling evidence. Lower = more conservative (fewer chars per token).
+    context_chars_per_token: int = 4
+
     @field_validator("allowed_content_types", mode="before")
     @classmethod
     def _parse_content_types(cls, value):

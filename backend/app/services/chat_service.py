@@ -15,6 +15,7 @@ from app.services.thread_summary_service import (
 )
 from app.services.summary_queue_service import enqueue_thread_summary_job
 from app.services.context_policy_service import get_context_policy
+from app.services import preference_service
 from app.config import settings
 
 DEV_USER_ID = "dev_user"
@@ -66,6 +67,15 @@ async def handle_chat(
 
     request_plan = create_request_plan(question)
     context_policy = get_context_policy(request_plan)
+
+    # Deterministic preference capture (no HITL): persist before retrieval so
+    # the just-saved preference is available to this turn's context.
+    if request_plan.intent == "preference":
+        await preference_service.save_preference(
+            user_id=user_id,
+            message=question,
+            source_seq=user_seq,
+        )
 
     memory = await retrieve_memory(
     user_id=user_id,

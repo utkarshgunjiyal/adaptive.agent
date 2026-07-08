@@ -1,6 +1,12 @@
 from app.services.message_service import get_recent_messages
 from app.services.thread_summary_service import get_thread_summary
-from app.services import document_service, embedding_service, vector_store_service
+from app.services import (
+    document_service,
+    embedding_service,
+    vector_store_service,
+    preference_service,
+    knowledge_service,
+)
 from app.schemas.request_plan import RequestPlan
 from app.schemas.context_policy import ContextPolicy
 from app.schemas.context_evidence import ContextEvidence
@@ -59,6 +65,40 @@ async def retrieve_memory(
                     },
                 )
             ]
+
+    # -- Long-term memory (Phase 4): user-scoped, not thread-scoped ----------
+    if context_policy.user_preferences_top_k > 0:
+        prefs = await preference_service.get_preferences(
+            user_id=user_id,
+            limit=context_policy.user_preferences_top_k,
+        )
+        memory.user_preferences = [
+            ContextEvidence(
+                source="user_preference",
+                header="[User Preference]",
+                content=pref["text"],
+                score=1.0,
+                metadata={"preference_id": str(pref["_id"])},
+            )
+            for pref in prefs
+        ]
+
+    if context_policy.knowledge_top_k > 0:
+        knowledge_hits = await knowledge_service.search_knowledge(
+            user_id=user_id,
+            query=question,
+            top_k=context_policy.knowledge_top_k,
+        )
+        memory.knowledge = [
+            ContextEvidence(
+                source="knowledge",
+                header="[Knowledge]",
+                content=item["text"],
+                score=1.0,
+                metadata={"knowledge_id": str(item["_id"])},
+            )
+            for item in knowledge_hits
+        ]
 
     # -- Document memory (Phase 2) -------------------------------------------
     # Only document intents pull document evidence; the deterministic router

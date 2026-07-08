@@ -12,6 +12,7 @@ from app.routes.health import router as health_router
 from app.routes.chat import router as chat_router
 from app.routes.documents import router as documents_router
 from app.routes.jobs import router as jobs_router
+from app.routes.memory import router as memory_router
 
 configure_logging(settings.log_level)
 logger = get_logger("app")
@@ -93,6 +94,7 @@ app.include_router(health_router)
 app.include_router(chat_router)
 app.include_router(documents_router)
 app.include_router(jobs_router)
+app.include_router(memory_router)
 
 
 @app.get("/")

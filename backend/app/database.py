@@ -10,6 +10,8 @@ messages_collection = db["messages"]
 thread_summaries_collection = db["thread_summaries"]
 documents_collection = db["documents"]
 jobs_collection = db["jobs"]
+user_preferences_collection = db["user_preferences"]
+knowledge_collection = db["knowledge"]
 
 
 async def ensure_indexes() -> None:
@@ -42,3 +44,14 @@ async def ensure_indexes() -> None:
     # Job lookups: by document, and a worker-friendly status/created ordering.
     await jobs_collection.create_index([("document_id", 1)])
     await jobs_collection.create_index([("status", 1), ("created_at", 1)])
+
+    # User preferences: newest first per user; dedup guard on normalized text.
+    await user_preferences_collection.create_index([("user_id", 1), ("created_at", -1)])
+    await user_preferences_collection.create_index(
+        [("user_id", 1), ("text_normalized", 1)],
+        unique=True,
+        name="uniq_user_preference",
+    )
+
+    # Knowledge memory: newest first per user.
+    await knowledge_collection.create_index([("user_id", 1), ("created_at", -1)])
