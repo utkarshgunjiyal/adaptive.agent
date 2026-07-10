@@ -138,13 +138,17 @@ class V15FinalAnswerProvider:
     async def generate_stream(self, final_prompt: FinalPrompt) -> AsyncIterator[str]:
         """Stream answer text as V1.5 produces it (Phase 38).
 
-        Reuses the existing V1.5 ``stream`` service (lazily resolved, no vendor
-        SDK here). If streaming is unavailable, gracefully falls back to
-        ``generate`` and yields the whole answer as a single chunk. Raw LLM/vendor
-        errors are wrapped as ``FinalProviderError`` — never leaked.
+        Resolution precedence: injected ``stream`` → injected ``complete`` →
+        lazy V1.5 ``stream`` → lazy V1.5 ``complete``. The lazy V1.5 stream is only
+        resolved when *nothing* was injected, so an injected ``complete`` (with no
+        injected ``stream``) falls back to ``generate`` — it is never shadowed by
+        the lazily-imported V1.5 stub. Raw LLM/vendor errors are wrapped as
+        ``FinalProviderError`` — never leaked.
         """
         stream_fn = self._stream
-        if stream_fn is None:
+        if stream_fn is None and self._complete is None:
+            # Nothing injected: try the lazy V1.5 stream. If unavailable, generate()
+            # will lazily resolve V1.5 complete below.
             try:
                 stream_fn = await resolve_v15_stream()
             except ProviderUnavailableError:
@@ -153,7 +157,9 @@ class V15FinalAnswerProvider:
                 self._ensure_identity()
 
         if stream_fn is None:
-            # Streaming not wired: assemble via generate() and emit once.
+            # No stream available (an injected ``complete``, or the lazy V1.5 stream
+            # is unavailable): assemble via generate() — which honors the injected
+            # ``complete`` first, then the lazy V1.5 ``complete`` — and emit once.
             answer = await self.generate(final_prompt)
             if answer.text:
                 yield answer.text
