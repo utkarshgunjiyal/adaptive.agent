@@ -44,6 +44,13 @@ class NonCheckpointableOutcomeError(CheckpointError):
     """Raised when trying to checkpoint a non-WAITING (terminal) outcome."""
 
 
+class CheckpointConflictError(CheckpointError):
+    """Raised when a lifecycle transition conflicts with the current state —
+    e.g. resuming a checkpoint that is no longer ``active`` (already resumed,
+    cancelled, or expired). Guards against duplicate continuation from two
+    concurrent resume requests."""
+
+
 def is_checkpointable(outcome: RuntimeOutcome) -> bool:
     return outcome in WAITING_OUTCOMES
 

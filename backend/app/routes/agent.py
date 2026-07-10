@@ -65,11 +65,13 @@ def resolve_user_id(user) -> str:
     return DEV_USER_ID
 
 
-# Lazily-built, shared default runtime. /agent/run, /agent/resume and
-# /agent/run/stream all use the SAME orchestrator instance — no duplicated
-# runtime construction. The in-memory store is replaceable with a Mongo-backed
-# store later without touching any handler.
+# Lazily-built, shared default runtime + checkpoint store. /agent/run,
+# /agent/resume and /agent/run/stream all use the SAME orchestrator + coordinator
+# + store instance — no duplicated construction, no store-per-request. The store
+# defaults to InMemory (config-free); production swaps in a Mongo-backed store
+# via ``configure_checkpoint_store`` at startup, without touching any handler.
 _orchestrator = None
+_checkpoint_store = None
 _coordinator: ResumeCoordinator | None = None
 
 
@@ -80,10 +82,27 @@ def _get_orchestrator():
     return _orchestrator
 
 
+def get_checkpoint_store():
+    global _checkpoint_store
+    if _checkpoint_store is None:
+        _checkpoint_store = InMemoryCheckpointStore()
+    return _checkpoint_store
+
+
+def configure_checkpoint_store(store) -> None:
+    """Composition-root hook: install the checkpoint store (e.g. a
+    MongoCheckpointStore) before the coordinator is first built. Call once at
+    startup. Resets the shared coordinator so it rebuilds against the new store.
+    Persistence logic stays out of the routes — this only *selects* the store."""
+    global _checkpoint_store, _coordinator
+    _checkpoint_store = store
+    _coordinator = None
+
+
 def get_resume_coordinator() -> ResumeCoordinator:
     global _coordinator
     if _coordinator is None:
-        _coordinator = ResumeCoordinator(_get_orchestrator(), InMemoryCheckpointStore())
+        _coordinator = ResumeCoordinator(_get_orchestrator(), get_checkpoint_store())
     return _coordinator
 
 
