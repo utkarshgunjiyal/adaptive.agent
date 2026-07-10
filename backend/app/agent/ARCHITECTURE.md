@@ -824,3 +824,75 @@ Both paths converge on Final Context Selection; the execution backend (native or
 LangGraph) is an implementation detail beneath the Executor, not a replacement
 for it. `RunContext` threads through every stage and is the durable artifact at
 the end.
+
+---
+
+## 27. Unified Capability Platform (Phase 40)
+
+Runner.ai has **one** capability platform. The planner, hybrid retrieval,
+execution bridge, evaluation, repair, and orchestrator never care whether a
+capability comes from internal Python, an API-backed adapter, MCP, or a future
+source — **everything is a `ToolSpec`**. This section records the locked design;
+it realizes the "Internal / API / MCP Adapters" node in §2 and §26.5 and
+generalizes the Phase 39 MCP boundary (§19) into a source abstraction.
+
+```
+Capability Source (internal | mcp | future)
+  → CapabilitySource.load()/snapshot()  →  ToolSpec[]
+  → UnifiedCapabilityRegistry.mount(source)   (one shared ToolRegistry)
+  → Hybrid Capability Retrieval (unchanged; reads the one registry)
+  → Top-K ToolSpec
+  → Execution Bridge  →  CompositeCapabilityExecutor (routes by ToolKind)
+  → source's adapter  →  AdapterResult  →  RunContext
+```
+
+### 27.1 Capability Sources
+A `CapabilitySource` (`registry/sources.py`) is a first-class, self-describing
+provider used by **both** halves of the platform:
+- **retrieval** — `load()` (ensure-fresh; may run discovery) / `snapshot()`
+  (no I/O) produce the source's `ToolSpec`s;
+- **execution** — `tool_kind` + `build_executor()` provide the adapter that runs
+  this source's tools.
+
+`InternalCapabilitySource` (namespace `internal`, executor
+`InternalCapabilityExecutor`) and `MCPCapabilitySource` (namespace `mcp`, wraps
+the Phase 39 `MCPRegistryManager`, executor `MCPAdapter`) ship today; a
+`future.*` source is added by writing one class — no runtime change.
+
+### 27.2 Registry ownership
+`UnifiedCapabilityRegistry` (`registry/unified.py`) owns one shared
+`ToolRegistry` — the exact object the hybrid retriever reads — and:
+- **registration** into that registry;
+- **duplicate / collision detection** (no id may belong to two sources);
+- **namespace isolation** (see §27.3);
+- **source ownership** (`source_id → {ids}`; unmount/refresh only ever touch a
+  source's own ids — a source can never modify another's capabilities);
+- **atomic refresh** (see §27.4);
+- **lifecycle** (`mount` / `unmount` / `refresh` / `refresh_all` / `shutdown`).
+
+The planner/retriever never talk to an individual source or registry — only to
+the unified registry's shared `ToolRegistry` (retrieval) and the by-kind
+`CompositeCapabilityExecutor` (execution). The factory composes sources →
+platform → retriever + executor.
+
+### 27.3 Namespaces
+Each source owns a `namespace`. Strict-namespace sources (MCP `mcp.*`, future
+`future.*`) must emit ids under `<namespace>.`; the internal source is the one
+**legacy flat namespace** — its historical ids (`search_documents`,
+`get_job_status`, …) are **stable and unprefixed**, so it declares
+`strict_namespace = False`. Isolation is enforced two ways: a strict source's ids
+must carry its prefix, and **no source may register an id owned by another
+source** (or a foreign pre-existing id). This prevents namespace collision,
+duplicate ids, and source spoofing; secrets never enter a `ToolSpec` (enforced at
+the MCP conversion boundary, §19).
+
+### 27.4 Refresh lifecycle
+`refresh(source_id)` re-loads a source and swaps its capabilities **atomically**:
+the new batch is produced and **fully validated before any registry mutation**.
+A discovery failure (`reload()` raises) or a validation failure (namespace /
+collision) aborts with the previous capabilities still active — a failed refresh
+never removes working capabilities or leaves partial/corrupt state.
+`refresh_all()` refreshes each source independently (one source's failure never
+rolls back another). `shutdown()` closes every source (best-effort). Ownership of
+the platform lifecycle belongs to the composition root (the factory builds it;
+`main.py` will own `shutdown` when MCP is mounted in production).

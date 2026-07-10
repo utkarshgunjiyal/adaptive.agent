@@ -75,8 +75,8 @@ config-free and unit-testable without a database or credentials.
 | Field | Value |
 |---|---|
 | **Branch** | `v2-autonomous-platform` |
-| **Latest commit** | `V2 Phase 39: MCP Integration Foundation` |
-| **Test count** | **585 passing** (`540` under `tests/agent`, `45` under `tests/api`) |
+| **Latest commit** | `V2 Phase 40: Unified Tool Registry & Capability Platform` |
+| **Test count** | **614 passing** (`569` under `tests/agent`, `45` under `tests/api`) |
 | **Python** | 3.11 (developed on 3.11.15) |
 | **Test command** | `cd backend && python -m pytest` |
 
@@ -332,6 +332,27 @@ separate pipeline); no vendor MCP SDK is imported in `app.agent`; server config
 is trusted-only and secrets never enter a `ToolSpec`/`RuntimeEvent`; the default
 runtime (no MCP configured) is byte-identical to Phase 38.
 
+### Phase 40 — Unified Tool Registry & Capability Platform
+One capability platform. A `CapabilitySource` abstraction
+(`registry/sources.py`) makes every capability origin a first-class, self-describing
+provider — `InternalCapabilitySource` and `MCPCapabilitySource` today,
+`future.*` sources later — each exposing its `ToolSpec`s (`load`/`snapshot`) **and**
+its executor (`tool_kind` + `build_executor`). A `UnifiedCapabilityRegistry`
+(`registry/unified.py`) mounts sources into one shared `ToolRegistry` and owns
+registration, duplicate/collision detection, **namespace isolation** (ownership +
+prefix), **source ownership** (`source_id → {ids}`), **atomic refresh** (validate
+the whole new batch before mutating; a discovery/validation failure leaves the old
+capabilities active), and lifecycle (`mount`/`unmount`/`refresh`/`refresh_all`/
+`shutdown`). The factory composes sources → platform → retriever + by-kind executor
+(`InternalCapabilityExecutor`/`CompositeCapabilityExecutor` relocated to
+`execution/capability_executor.py`, re-exported from the factory). **Decision:**
+the planner/retriever/execution bridge/evaluator/repair/orchestrator never learn a
+capability's origin — everything is a `ToolSpec`; retrieval and the execution
+bridge are **unchanged** (they just read one registry / route by kind); internal
+ids stay **flat and stable** (`search_documents` …, the legacy `internal`
+namespace) while new sources use dotted namespaces; the default runtime (internal
+only) is byte-identical, and adding MCP is composition-only.
+
 ---
 
 ## Runtime Pipeline
@@ -520,6 +541,18 @@ Locations are under `backend/app/agent/`.
   pipeline) and `AdapterResult`s with safe provenance (`adapter_type=mcp`,
   `server_id`, `tool_name`, `capability_id`, `duration_ms`) — no secrets.
 
+### Capability Platform — `registry/sources.py`, `registry/unified.py`, `execution/capability_executor.py`
+- **Responsibility:** unify every capability origin behind one platform.
+  `CapabilitySource` (internal / MCP / future) is a self-describing provider of
+  `ToolSpec`s + an executor; `UnifiedCapabilityRegistry` mounts sources into one
+  shared `ToolRegistry` and owns registration, duplicate/collision detection,
+  namespace isolation, source ownership, atomic refresh, and lifecycle.
+- **Dependencies:** injected `CapabilitySource`s (the MCP source wraps the
+  `MCPRegistryManager`); the shared `ToolRegistry`. No LLM/DB/settings.
+- **Outputs:** one registry the hybrid retriever reads and a `{ToolKind →
+  executor}` map the factory turns into the Execution Bridge — the planner,
+  retriever, and orchestrator never see a capability's origin.
+
 ---
 
 ## API Surface
@@ -705,6 +738,13 @@ reason — most of the codebase relies on them.
     Bridge; the planner never knows a capability is internal/API/MCP; no vendor
     MCP SDK is imported in `app.agent`; MCP server config is trusted-only and
     secrets never enter a `ToolSpec` or `RuntimeEvent`.
+18. **One unified capability platform.** Every capability origin is a
+    `CapabilitySource` mounted into the `UnifiedCapabilityRegistry`; the planner,
+    retriever, execution bridge, evaluator, repair, and orchestrator only ever
+    see `ToolSpec`s and never learn the origin. Namespaces are isolated by
+    ownership + prefix (a source can never touch another's ids); refresh is
+    atomic (old capabilities stay active until a validated replacement commits);
+    internal ids remain flat and stable. Adding a source is composition-only.
 
 ---
 
@@ -713,8 +753,8 @@ reason — most of the codebase relies on them.
 | Phase | Milestone | Sketch |
 |---|---|---|
 | **Phase 39 ✅** | **MCP Integration Foundation** | *Done.* MCP servers are represented via trusted config; tools discovered through an injected `MCPClient` become normalized `ToolSpec` capabilities that participate in the existing hybrid retrieval and execute through the Execution Bridge into `AdapterResult`s. Planner/orchestrator stay MCP-agnostic. Fake client + one transport abstraction only (no live server, no SDK). |
-| **Phase 40** | **Unified Tool Registry** | Merge internal `ToolSpec`s, V1.5 capabilities, and MCP tools into one registry + retrieval surface, so the planner/direct runtimes see a single capability namespace. Includes real MCP transport (stdio / streamable_http) behind the `MCPClient` Protocol once an MCP dependency is added, plus per-capability enable/permission policy. |
-| **Phase 41** | **Frontend + HITL** | A UI over the streaming API and the `WAITING_*` outcomes: render live token streams, surface pending approvals/clarifications, and drive `/agent/resume`. |
+| **Phase 40 ✅** | **Unified Tool Registry & Capability Platform** | *Done.* `CapabilitySource` + `UnifiedCapabilityRegistry`: internal / MCP / future sources mount into one shared registry (namespaces, ownership, atomic refresh, lifecycle); retrieval and the execution bridge are unchanged; the factory composes sources. Planner is unaware of origin; default runtime unchanged. |
+| **Phase 41** | **Frontend + HITL** | A UI over the streaming API and the `WAITING_*` outcomes: render live token streams, surface pending approvals/clarifications, and drive `/agent/resume`. Also: real MCP transport (stdio / streamable_http) behind the `MCPClient` Protocol once an MCP dependency is added, mounting the capability platform in `main.py` lifespan, and per-capability enable/permission policy. |
 | **Phase 42** | **Production hardening** | Streaming transport hardening (keep-alive, client-disconnect cancellation), observability/metrics, rate limiting, load/soak testing, and deployment/runbook polish. |
 
 **Phase 39 current limitations (intentional scope boundary).** Only the transport
@@ -731,9 +771,9 @@ Protocol + one capability namespace + policy).
 
 ## Test Status
 
-- **Current:** **585 passing** (1 benign Starlette deprecation warning),
+- **Current:** **614 passing** (1 benign Starlette deprecation warning),
   `python -m pytest`, ~2–3s.
-  - `tests/agent/` — **540** (unit tests for every runtime stage; config-free,
+  - `tests/agent/` — **569** (unit tests for every runtime stage; config-free,
     fakes + `asyncio.run`).
   - `tests/api/` — **45** (FastAPI `TestClient` over the routers with injected
     fakes; no DB/LLM).
@@ -761,6 +801,8 @@ Protocol + one capability namespace + policy).
 - **Streaming:** `test_runtime_streaming`.
 - **MCP (Phase 39):** `test_mcp_models`, `test_mcp_registry`, `test_mcp_adapter`,
   `test_mcp_integration`.
+- **Capability platform (Phase 40):** `test_unified_registry`,
+  `test_capability_sources`.
 - **API:** `test_agent_run`, `test_agent_resume`, `test_agent_stream`,
   `test_checkpoint_wiring`, `test_runtime_provider_wiring`,
   `test_provider_failure_api`.
@@ -780,14 +822,14 @@ app/
     checkpoint/              ← store Protocol, in-memory + Mongo, async adapter, resume, composition
     context/                 ← Context Engine, providers, prioritizer, budget, final-prompt builder
     evaluation/              ← deterministic answer evaluation engine + models
-    execution/               ← executor, shared state, adapter runner
+    execution/               ← executor, shared state, adapter runner, capability_executor (Execution Bridge)
     gate/                    ← BehaviorGate (direct vs planner)
     llm/                     ← provider boundary: final_provider, planner_provider, provider_adapter
     mcp/                     ← MCP boundary: models, errors, client (Protocol + FakeMCPClient), registry manager
     models/                  ← typed models: tool_spec, plan, final_prompt, planner_prompt, policy…
     optimization/            ← plan optimizer (execution groups)
     policy/                  ← policy engine (annotate-only)
-    registry/                ← ToolRegistry + loader
+    registry/                ← ToolRegistry + loader; UnifiedCapabilityRegistry + CapabilitySources (Phase 40)
     repair/                  ← repair runtime + models
     retriever/               ← hybrid retrieval pipeline (embeddings, reranker, capability, context)
     runtime/                 ← orchestrator, direct/planner runtimes, outcome, factory,
