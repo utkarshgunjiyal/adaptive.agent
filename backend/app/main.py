@@ -13,7 +13,9 @@ from app.routes.chat import router as chat_router
 from app.routes.documents import router as documents_router
 from app.routes.jobs import router as jobs_router
 from app.routes.memory import router as memory_router
-from app.routes.agent import router as agent_router
+from app.routes.agent import router as agent_router, configure_checkpoint_store
+from app.agent.checkpoint.composition import select_checkpoint_store
+from app.agent.checkpoint.mongo_store import mongo_collection_from_uri
 
 configure_logging(settings.log_level)
 logger = get_logger("app")
@@ -31,7 +33,27 @@ async def lifespan(app: FastAPI):
     )
     await ensure_indexes()
     logger.info("app.indexes_ready")
+
+    # Agent checkpoint backend (Phase 35). Composition root reads config and
+    # selects/wires the shared store; routes stay config-free. Mongo backend
+    # builds its own SYNCHRONOUS pymongo client (the checkpoint store is sync);
+    # we own and close it here.
+    checkpoint_mongo_client = None
+    if settings.agent_checkpoint_backend == "mongo":
+        collection = mongo_collection_from_uri(
+            settings.mongo_url, settings.db_name, settings.agent_checkpoint_collection
+        )
+        checkpoint_mongo_client = collection.database.client
+        store = select_checkpoint_store("mongo", mongo_collection=collection)
+    else:
+        store = select_checkpoint_store(settings.agent_checkpoint_backend)
+    configure_checkpoint_store(store)
+    logger.info("app.checkpoint_backend_ready", extra={"backend": settings.agent_checkpoint_backend})
+
     yield
+
+    if checkpoint_mongo_client is not None:
+        checkpoint_mongo_client.close()  # owned here; distinct from the Motor client
     client.close()
     logger.info("app.shutdown")
 

@@ -35,6 +35,23 @@ class Settings(BaseSettings):
     mongo_url: str = Field(..., description="MongoDB connection string")
     db_name: str = "runner_ai_v1"
 
+    # -- Agent checkpoint store (Phase 35) -----------------------------------
+    # "memory" (default) uses the in-process InMemoryCheckpointStore; "mongo"
+    # selects the durable MongoCheckpointStore, reusing mongo_url/db_name above.
+    agent_checkpoint_backend: str = "memory"
+    agent_checkpoint_collection: str = "agent_checkpoints"
+
+    @field_validator("agent_checkpoint_backend")
+    @classmethod
+    def _validate_checkpoint_backend(cls, value: str) -> str:
+        allowed = {"memory", "mongo"}
+        normalized = (value or "").strip().lower()
+        if normalized not in allowed:
+            raise ValueError(
+                f"agent_checkpoint_backend must be one of {sorted(allowed)}, got {value!r}"
+            )
+        return normalized
+
     # -- Redis (job queue) ---------------------------------------------------
     redis_url: str = "redis://localhost:6379/0"
     job_queue_name: str = "runner:jobs:document_ingest"

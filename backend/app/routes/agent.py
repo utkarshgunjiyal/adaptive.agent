@@ -24,6 +24,7 @@ from fastapi.responses import StreamingResponse
 
 from app.agent.checkpoint.resume import ResumeResolution
 from app.agent.checkpoint.store import (
+    CheckpointConflictError,
     CheckpointNotFoundError,
     InMemoryCheckpointStore,
     is_checkpointable,
@@ -31,7 +32,7 @@ from app.agent.checkpoint.store import (
 from app.agent.runtime.events import RuntimeEvent
 from app.agent.runtime.factory import build_default_runtime
 from app.agent.runtime.outcome import RuntimeOutcome
-from app.agent.runtime.resume_coordinator import ResumeCoordinator
+from app.agent.runtime.resume_coordinator import AsyncResumeCoordinator
 from app.agent.runtime.streaming import RuntimeStreamer
 from app.schemas.agent import AgentResumeRequest, AgentRunRequest, AgentRunResponse
 
@@ -72,7 +73,7 @@ def resolve_user_id(user) -> str:
 # via ``configure_checkpoint_store`` at startup, without touching any handler.
 _orchestrator = None
 _checkpoint_store = None
-_coordinator: ResumeCoordinator | None = None
+_coordinator: AsyncResumeCoordinator | None = None
 
 
 def _get_orchestrator():
@@ -99,10 +100,12 @@ def configure_checkpoint_store(store) -> None:
     _coordinator = None
 
 
-def get_resume_coordinator() -> ResumeCoordinator:
+def get_resume_coordinator() -> AsyncResumeCoordinator:
+    # Async-safe coordinator: synchronous checkpoint I/O is offloaded off the
+    # event loop. Shared singleton — one coordinator + store per process.
     global _coordinator
     if _coordinator is None:
-        _coordinator = ResumeCoordinator(_get_orchestrator(), get_checkpoint_store())
+        _coordinator = AsyncResumeCoordinator(_get_orchestrator(), get_checkpoint_store())
     return _coordinator
 
 
@@ -137,7 +140,7 @@ def _to_response(coord_result) -> AgentRunResponse:
 async def run_agent(
     request: AgentRunRequest,
     user=Depends(get_current_user),
-    coordinator: ResumeCoordinator = Depends(get_resume_coordinator),
+    coordinator=Depends(get_resume_coordinator),
 ) -> AgentRunResponse:
     user_id = resolve_user_id(user)
     coord_result = await coordinator.start(
@@ -152,7 +155,7 @@ async def run_agent(
 @router.post("/resume", response_model=AgentRunResponse)
 async def resume_agent(
     request: AgentResumeRequest,
-    coordinator: ResumeCoordinator = Depends(get_resume_coordinator),
+    coordinator=Depends(get_resume_coordinator),
 ) -> AgentRunResponse:
     resolution = ResumeResolution(
         kind=request.resolution.kind,
@@ -164,6 +167,10 @@ async def resume_agent(
         coord_result = await coordinator.resume(request.checkpoint_id, resolution)
     except CheckpointNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CheckpointConflictError as exc:
+        # Already resumed / cancelled / not active — or a concurrent second
+        # resume that lost the atomic claim.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _to_response(coord_result)
 
 

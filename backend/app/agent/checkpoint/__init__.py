@@ -1,3 +1,8 @@
+from app.agent.checkpoint.async_store import AsyncCheckpointStoreAdapter
+from app.agent.checkpoint.composition import (
+    SUPPORTED_BACKENDS,
+    select_checkpoint_store,
+)
 from app.agent.checkpoint.models import CheckpointRecord, CheckpointStatus
 from app.agent.checkpoint.mongo_store import (
     MongoCheckpointStore,
@@ -31,4 +36,7 @@ __all__ = [
     "NonCheckpointableOutcomeError",
     "is_checkpointable",
     "snapshot_run_context",
+    "AsyncCheckpointStoreAdapter",
+    "select_checkpoint_store",
+    "SUPPORTED_BACKENDS",
 ]
