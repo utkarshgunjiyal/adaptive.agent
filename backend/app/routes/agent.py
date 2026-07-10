@@ -1,26 +1,34 @@
-"""Agent Run API (Phase 30).
+"""Agent Run + Resume API (Phase 30-31).
 
 POST /agent/run — the HTTP entry point to the V2 runtime:
 
     request → authenticate user → build_default_runtime() → ResumeCoordinator.start
             → API-safe AgentRunResponse
 
+POST /agent/resume — continue a paused run (Phase 31): map the caller's
+resolution to a domain ResumeResolution and drive ResumeCoordinator.resume over
+the *same* in-memory checkpoint store. An unknown checkpoint id is a 404.
+
 Completed runs return the answer; WAITING_* runs return a checkpoint id plus the
-pending action/reason (the run is persisted for a future /agent/resume). The
+pending action/reason (the run is persisted for a later /agent/resume). The
 internal RunContext and the full FinalPrompt are never exposed.
 
 Config-free at import: dependencies (current user, resume coordinator) are
-resolved at request time and overridable in tests. No streaming, no Mongo store,
-no /agent/resume yet.
+resolved at request time and overridable in tests. No streaming, no Mongo store.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
-from app.agent.checkpoint.store import InMemoryCheckpointStore, is_checkpointable
+from app.agent.checkpoint.resume import ResumeResolution
+from app.agent.checkpoint.store import (
+    CheckpointNotFoundError,
+    InMemoryCheckpointStore,
+    is_checkpointable,
+)
 from app.agent.runtime.factory import build_default_runtime
 from app.agent.runtime.outcome import RuntimeOutcome
 from app.agent.runtime.resume_coordinator import ResumeCoordinator
-from app.schemas.agent import AgentRunRequest, AgentRunResponse
+from app.schemas.agent import AgentResumeRequest, AgentRunRequest, AgentRunResponse
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -99,4 +107,22 @@ async def run_agent(
         thread_id=request.thread_id,
         metadata=request.metadata,
     )
+    return _to_response(coord_result)
+
+
+@router.post("/resume", response_model=AgentRunResponse)
+async def resume_agent(
+    request: AgentResumeRequest,
+    coordinator: ResumeCoordinator = Depends(get_resume_coordinator),
+) -> AgentRunResponse:
+    resolution = ResumeResolution(
+        kind=request.resolution.kind,
+        value=request.resolution.value,
+        reason=request.resolution.reason,
+        metadata=request.resolution.metadata,
+    )
+    try:
+        coord_result = await coordinator.resume(request.checkpoint_id, resolution)
+    except CheckpointNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return _to_response(coord_result)
