@@ -34,6 +34,12 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def drain(agen):
+    async def _run():
+        return [chunk async for chunk in agen]
+    return asyncio.run(_run())
+
+
 def sample_run_context():
     rc = RunContext.create(
         "What does the document say about pricing?",
@@ -166,6 +172,41 @@ def test_fake_provider_usage_metadata_present():
     answer = run(DeterministicFinalProvider().generate(sample_prompt()))
     for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
         assert key in answer.usage_metadata
+
+
+# --------------------------------------------------------------------------- #
+# Phase 38 — token streaming parity
+# --------------------------------------------------------------------------- #
+
+def test_stream_chunks_reconstruct_generate_text():
+    prompt = sample_prompt()
+    provider = DeterministicFinalProvider()
+    chunks = drain(provider.generate_stream(prompt))
+    assert len(chunks) > 1  # genuinely chunked, not one blob
+    assert "".join(chunks) == run(provider.generate(prompt)).text
+
+
+def test_build_final_answer_matches_generate():
+    # Assembling from streamed text yields the SAME FinalAnswer as generate().
+    prompt = sample_prompt()
+    provider = DeterministicFinalProvider()
+    streamed_text = "".join(drain(provider.generate_stream(prompt)))
+    assembled = provider.build_final_answer(prompt, streamed_text)
+    direct = run(provider.generate(prompt))
+    assert assembled.text == direct.text
+    assert assembled.used_citations == direct.used_citations
+    assert assembled.usage_metadata == direct.usage_metadata
+    assert assembled.provider == direct.provider
+    assert assembled.model == direct.model
+    assert assembled.finish_reason == direct.finish_reason
+    assert assembled.metadata == direct.metadata
+
+
+def test_streaming_provider_satisfies_protocol():
+    provider = DeterministicFinalProvider()
+    assert isinstance(provider, FinalAnswerProvider)
+    assert hasattr(provider, "generate_stream")
+    assert hasattr(provider, "build_final_answer")
 
 
 # --------------------------------------------------------------------------- #

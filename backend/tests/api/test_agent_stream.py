@@ -155,7 +155,9 @@ def test_planner_events_only_for_planner_path():
 
 
 def test_chunk_events_reconstruct_answer():
-    streamer = RuntimeStreamer(_orchestrator(), chunk_answer=True, chunk_size=8)
+    # Phase 38: answer chunks stream live over SSE by default; concatenating them
+    # reconstructs the completed answer exactly.
+    streamer = RuntimeStreamer(_orchestrator())
     frames = parse_sse(client(streamer).post("/agent/run/stream", json={"user_request": DIRECT_REQUEST}).text)
     chunks = [d["data"]["text"] for t, d in frames if t == "answer_chunk"]
     completed = next(d for t, d in frames if t == "answer_completed")
@@ -175,8 +177,8 @@ def test_stream_does_not_expose_internal_objects():
 
 
 def test_dependency_injection_uses_injected_streamer():
-    # A custom-configured streamer (chunking) proves the injected instance is used.
-    frames = parse_sse(client(RuntimeStreamer(_orchestrator(), chunk_answer=True)).post(
+    # The injected streamer drives the run; live answer chunks prove it executed.
+    frames = parse_sse(client(RuntimeStreamer(_orchestrator())).post(
         "/agent/run/stream", json={"user_request": DIRECT_REQUEST}).text)
     assert any(t == "answer_chunk" for t, _ in frames)
 

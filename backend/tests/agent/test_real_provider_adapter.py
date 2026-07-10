@@ -34,6 +34,12 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def drain(agen):
+    async def _run():
+        return [chunk async for chunk in agen]
+    return asyncio.run(_run())
+
+
 def final_prompt():
     return FinalPrompt(
         system_prompt="system",
@@ -96,6 +102,62 @@ def test_adapter_only_receives_final_prompt():
     sig = inspect.signature(V15FinalAnswerProvider.generate)
     params = list(sig.parameters)
     assert params == ["self", "final_prompt"]
+
+
+# --------------------------------------------------------------------------- #
+# Phase 38 — V1.5 token streaming adapter
+# --------------------------------------------------------------------------- #
+
+def test_adapter_streams_chunks_from_v15_stream():
+    async def fake_stream(system, prompt, **kw):
+        for piece in ("The price ", "is $10 ", "[E1]."):
+            yield piece
+
+    provider = V15FinalAnswerProvider(stream=fake_stream, provider="test", model="m1")
+    chunks = drain(provider.generate_stream(final_prompt()))
+    assert chunks == ["The price ", "is $10 ", "[E1]."]
+    # build_final_answer assembles the streamed text into a FinalAnswer.
+    answer = provider.build_final_answer(final_prompt(), "".join(chunks))
+    assert isinstance(answer, FinalAnswer)
+    assert answer.text == "The price is $10 [E1]."
+    assert answer.used_citations == ["E1"]
+    assert answer.provider == "test" and answer.model == "m1"
+
+
+def test_adapter_stream_falls_back_to_generate_when_stream_absent():
+    # No stream injected and lazy resolution unavailable → fall back to
+    # complete()-based generation, yielding the whole answer as one chunk.
+    async def fake_complete(system, prompt, **kw):
+        return "Full answer [E1]."
+
+    provider = V15FinalAnswerProvider(complete=fake_complete, provider="t", model="m")
+    chunks = drain(provider.generate_stream(final_prompt()))
+    assert chunks == ["Full answer [E1]."]
+
+
+def test_adapter_stream_wraps_backend_error():
+    async def boom(system, prompt, **kw):
+        raise RuntimeError("vendor stream 500")
+        yield  # pragma: no cover - makes this an async generator
+
+    with pytest.raises(FinalProviderError):
+        drain(V15FinalAnswerProvider(stream=boom, provider="t", model="m").generate_stream(final_prompt()))
+
+
+def test_adapter_stream_never_leaks_vendor_error_text():
+    secret = "sk-vendor-SECRET-42"
+
+    async def boom(system, prompt, **kw):
+        raise RuntimeError(secret)
+        yield  # pragma: no cover
+
+    try:
+        drain(V15FinalAnswerProvider(stream=boom, provider="t", model="m").generate_stream(final_prompt()))
+        assert False, "expected FinalProviderError"
+    except FinalProviderError as exc:
+        assert exc.safe_message == "The final answer could not be generated."
+        # The safe_message (surfaced to callers) carries no vendor detail.
+        assert secret not in exc.safe_message
 
 
 # --------------------------------------------------------------------------- #

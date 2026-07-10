@@ -151,8 +151,11 @@ def test_answer_completed_carries_text():
     answer = next(e for e in events if e.type == E.ANSWER_COMPLETED)
     assert answer.data["text"]
     assert answer.data["provider"] == "deterministic"
-    # deterministic provider → no chunks by default
-    assert E.ANSWER_CHUNK not in types(events)
+    # Phase 38: true token streaming — the deterministic provider yields chunks
+    # live, and concatenating them reproduces the completed answer text exactly.
+    chunks = [e.data["text"] for e in events if e.type == E.ANSWER_CHUNK]
+    assert chunks
+    assert "".join(chunks) == answer.data["text"]
 
 
 # --------------------------------------------------------------------------- #
@@ -199,19 +202,35 @@ def test_no_evaluation_events_without_evaluator():
 
 
 # --------------------------------------------------------------------------- #
-# Chunking + failure
+# Live token streaming + failure
 # --------------------------------------------------------------------------- #
 
-def test_chunk_answer_emits_answer_chunks():
-    events = collect(RuntimeStreamer(orchestrator(), chunk_answer=True, chunk_size=8)
-                     .run_stream(DIRECT_REQUEST, user_id="u"))
+def test_answer_streams_live_between_started_and_completed():
+    events = collect(RuntimeStreamer(orchestrator()).run_stream(DIRECT_REQUEST, user_id="u"))
     t = types(events)
     assert E.ANSWER_CHUNK in t
-    # chunks appear between answer_started and answer_completed
-    assert t.index(E.ANSWER_STARTED) < t.index(E.ANSWER_CHUNK) < t.index(E.ANSWER_COMPLETED)
+    # chunks appear strictly between answer_started and answer_completed
+    assert t.index(E.ANSWER_STARTED) < t.index(E.ANSWER_CHUNK)
+    assert t.index(E.ANSWER_CHUNK) < t.index(E.ANSWER_COMPLETED)
     reassembled = "".join(e.data["text"] for e in events if e.type == E.ANSWER_CHUNK)
     completed = next(e for e in events if e.type == E.ANSWER_COMPLETED)
     assert reassembled == completed.data["text"]
+
+
+def test_answer_streams_before_evaluation_and_repair():
+    # True temporal order: the draft answer streams first, THEN it is evaluated
+    # (evaluation never sees partial chunks). A regeneration repair produces a
+    # second bounded stream round after the repair events.
+    evaluator = ScriptedEvaluator([failing(RepairAction.REGENERATE_WITH_STRONGER_INSTRUCTIONS), passing()])
+    events = collect(RuntimeStreamer(orchestrator(evaluator)).run_stream(DIRECT_REQUEST, user_id="u"))
+    t = types(events)
+    # first answer_completed precedes the first evaluation_completed
+    assert t.index(E.ANSWER_COMPLETED) < t.index(E.EVALUATION_COMPLETED)
+    # the repair triggers a *second* answer round (two answer_started events)
+    assert t.count(E.ANSWER_STARTED) == 2
+    assert t.count(E.ANSWER_COMPLETED) == 2
+    # repair happens between the two rounds
+    assert t.index(E.REPAIR_STARTED) < t.index(E.ANSWER_STARTED, t.index(E.ANSWER_STARTED) + 1)
 
 
 def test_runtime_failed_on_orchestrator_error():
@@ -219,6 +238,43 @@ def test_runtime_failed_on_orchestrator_error():
     assert types(events) == [E.RUNTIME_STARTED, E.RUNTIME_FAILED]
     assert events[-1].data["error_type"] == "RuntimeError"
     assert E.RUNTIME_COMPLETED not in types(events)
+
+
+def test_mid_stream_failure_terminates_with_runtime_failed():
+    from app.agent.llm.provider_adapter import FinalProviderError
+
+    class MidStreamFailingProvider:
+        provider = "boom"
+        model = "boom"
+
+        async def generate(self, final_prompt):  # pragma: no cover - not used here
+            raise FinalProviderError("secret")
+
+        async def generate_stream(self, final_prompt):
+            yield "partial "
+            raise FinalProviderError("sk-vendor-SECRET")
+
+        def build_final_answer(self, final_prompt, text):  # pragma: no cover
+            raise AssertionError("must not assemble a failed stream")
+
+    retriever = FakeRetriever([make_tool("cap")])
+    direct = DirectRuntime(retriever, FakeExecutor())
+    orch = AgentOrchestrator(
+        context_engine=FakeContextEngine(), behavior_gate=BehaviorGate(),
+        direct_runtime=direct, planner_runtime=PlannerRuntime(direct, retriever),
+        final_context_builder=FinalContextBuilder(),
+        final_provider=MidStreamFailingProvider(),
+    )
+    events = collect(RuntimeStreamer(orch).run_stream(DIRECT_REQUEST, user_id="u"))
+    t = types(events)
+    # a partial chunk may have been emitted, but the run terminates on failure
+    assert E.ANSWER_STARTED in t
+    assert t[-1] == E.RUNTIME_FAILED
+    assert E.RUNTIME_COMPLETED not in t
+    failed = events[-1]
+    assert failed.data["failure_stage"] == "final_provider"
+    # no vendor detail leaks into any streamed event
+    assert "sk-vendor-SECRET" not in str([e.model_dump() for e in events])
 
 
 # --------------------------------------------------------------------------- #

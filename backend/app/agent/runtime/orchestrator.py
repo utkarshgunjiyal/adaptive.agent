@@ -50,8 +50,37 @@ from app.agent.llm.provider_adapter import (
 from app.agent.models.final_prompt import FinalPrompt
 from app.agent.repair.runtime import RepairRuntime
 from app.agent.runtime.context import BehaviorPath, RunContext
+from app.agent.runtime.events import RuntimeEventType as E
 from app.agent.runtime.outcome import RuntimeOutcome, derive_runtime_outcome
 from app.agent.runtime.planner_runtime import ExecutionPlan
+
+
+class _StreamEmitter:
+    """Emits ordered RuntimeEvents through an optional sink during ``run()``.
+
+    Phase 38 streaming seam. When ``sink`` is None the emitter is a no-op, so the
+    non-streaming ``/agent/run`` path is byte-identical to before — no events, no
+    behavior change. ``streaming`` tells the answer seam whether to token-stream
+    (via ``generate_stream``) or generate the whole answer at once. ``run_id`` is
+    bound once the RunContext exists so every event can carry it.
+
+    The sink is an async callable ``sink(event_type, run_id, data)``; sequence
+    numbering and terminal (runtime_completed/failed) events belong to the caller
+    (RuntimeStreamer), not the orchestrator.
+    """
+
+    def __init__(self, sink) -> None:
+        self._sink = sink
+        self.streaming = sink is not None
+        self._run_id = None
+
+    def bind_run_id(self, run_id) -> None:
+        self._run_id = run_id
+
+    async def __call__(self, event_type: E, **data) -> None:
+        if self._sink is None:
+            return
+        await self._sink(event_type, self._run_id, data)
 
 
 class OrchestratorError(Exception):
@@ -162,10 +191,24 @@ class AgentOrchestrator:
         user_id: str,
         thread_id: str | None = None,
         metadata: dict | None = None,
+        *,
+        stream_sink=None,
     ) -> AgentRunResult:
+        # Phase 38: an optional ``stream_sink`` turns this into a live event
+        # source. When absent (``/agent/run``) ``emit`` is a no-op and the whole
+        # pipeline is byte-identical to the non-streaming behavior.
+        emit = _StreamEmitter(stream_sink)
+
         # 1. Build the RunContext (working context assembled by the engine).
+        await emit(E.CONTEXT_STARTED)
         run_context = await self._context_engine.build(
             user_request, user_id, thread_id=thread_id, metadata=metadata
+        )
+        emit.bind_run_id(run_context.run_id)
+        await emit(
+            E.CONTEXT_COMPLETED,
+            providers=run_context.metadata.get("context_providers"),
+            context_size=len(run_context.working_context),
         )
 
         # 2. Behavior Gate — attaches behavior_profile + metadata["behavior_decision"].
@@ -176,6 +219,7 @@ class AgentOrchestrator:
         # Planner-provider failures never execute a guessed plan — they convert
         # to a safe RuntimeOutcome. Only DOMAIN provider errors are caught;
         # programming bugs still propagate.
+        await emit(E.RETRIEVAL_STARTED)
         if path == BehaviorPath.PLANNER:
             try:
                 plan = await self._resolve_plan(run_context)
@@ -186,11 +230,33 @@ class AgentOrchestrator:
             run_context = await self._planner_runtime.run(run_context, plan)
         else:
             run_context = await self._direct_runtime.run(run_context)
+        await emit(
+            E.RETRIEVAL_COMPLETED,
+            selected_capabilities=list(run_context.selected_capabilities),
+        )
 
-        # 4-6. Build the final prompt, generate, and record the draft answer.
+        if path == BehaviorPath.PLANNER:
+            planner = run_context.metadata.get("planner_runtime") or {}
+            await emit(E.PLANNER_STARTED)
+            await emit(
+                E.PLANNER_COMPLETED,
+                execution_order=planner.get("execution_order"),
+                runtime_status=planner.get("runtime_status"),
+            )
+
+        for output in run_context.tool_outputs:
+            await emit(E.TOOL_STARTED, capability_id=output.capability_id)
+            await emit(
+                E.TOOL_COMPLETED,
+                capability_id=output.capability_id,
+                output_keys=sorted(output.output.keys()),
+            )
+
+        # 4-6. Build the final prompt, generate (live-streaming the answer when a
+        # sink is present), and record the draft answer.
         final_prompt = self._final_context_builder.build(run_context)
         try:
-            answer = await self._final_provider.generate(final_prompt)
+            answer = await self._generate_answer(final_prompt, emit)
         except (FinalProviderError, ProviderUnavailableError) as exc:
             return self._provider_failure_result(
                 run_context, path.value, stage="final_provider", exc=exc,
@@ -214,7 +280,7 @@ class AgentOrchestrator:
         terminal_repair = None
         if evaluator_ran:
             final_prompt, answer, report, records, terminal_repair = (
-                await self._evaluate_and_repair(run_context, final_prompt, answer)
+                await self._evaluate_and_repair(run_context, final_prompt, answer, emit)
             )
             result_metadata.update(
                 {
@@ -250,18 +316,62 @@ class AgentOrchestrator:
             metadata=result_metadata,
         )
 
-    async def _evaluate_and_repair(self, run_context, final_prompt, answer):
+    async def _generate_answer(self, final_prompt: FinalPrompt, emit) -> FinalAnswer:
+        """The single answer-generation seam (Phase 38).
+
+        Non-streaming (no sink): call ``generate`` — byte-identical to before.
+        Streaming: emit ``answer_started``, one ``answer_chunk`` per provider
+        chunk *live*, assemble the complete draft, build the FinalAnswer, then
+        emit ``answer_completed``. Providers predating the streaming contract fall
+        back to ``generate`` (emitted as one chunk). Evaluation never sees partial
+        chunks — only the assembled answer this method returns.
+        """
+        if not emit.streaming:
+            return await self._final_provider.generate(final_prompt)
+
+        await emit(E.ANSWER_STARTED)
+        stream = getattr(self._final_provider, "generate_stream", None)
+        build = getattr(self._final_provider, "build_final_answer", None)
+        if stream is None or build is None:
+            # Provider predates the streaming contract: still a live event, just
+            # not token-by-token.
+            answer = await self._final_provider.generate(final_prompt)
+            if answer.text:
+                await emit(E.ANSWER_CHUNK, text=answer.text)
+        else:
+            chunks: list[str] = []
+            async for chunk in stream(final_prompt):
+                chunks.append(chunk)
+                await emit(E.ANSWER_CHUNK, text=chunk)
+            answer = build(final_prompt, "".join(chunks))
+
+        await emit(
+            E.ANSWER_COMPLETED,
+            text=answer.text,
+            provider=answer.provider,
+            model=answer.model,
+        )
+        return answer
+
+    async def _evaluate_and_repair(self, run_context, final_prompt, answer, emit=None):
         """Evaluate the draft; on failure, run bounded local regeneration.
 
         Only repairs that return an ``updated_final_prompt`` (regenerate_*) are
         executed here, capped by ``max_repair_rounds``. Terminal local repairs
-        (partial/fail) and deferred hand-offs are recorded, not executed.
+        (partial/fail) and deferred hand-offs are recorded, not executed. When
+        streaming, a regeneration repair produces a *second bounded stream round*
+        (new answer_started/chunk/completed) via ``_generate_answer``.
         """
+        emit = emit or _StreamEmitter(None)
         evaluator = self._answer_evaluator
         repair_runtime = self._repair_runtime
 
+        await emit(E.EVALUATION_STARTED)
         report = evaluator.evaluate(final_prompt, answer, run_context)
         attach_evaluation_report(run_context, report)
+        await emit(
+            E.EVALUATION_COMPLETED, passed=report.passed, overall_score=report.overall_score
+        )
 
         records: list[dict] = []
         terminal_repair = None
@@ -269,6 +379,7 @@ class AgentOrchestrator:
         while not report.passed and rounds < self._max_repair_rounds:
             result = repair_runtime.repair(run_context, final_prompt, answer, report)
             terminal_repair = result
+            await emit(E.REPAIR_STARTED, action=result.action.value)
             records.append(
                 {
                     "round": rounds + 1,
@@ -278,15 +389,27 @@ class AgentOrchestrator:
                     "reason": result.reason,
                 }
             )
+            await emit(
+                E.REPAIR_COMPLETED,
+                action=result.action.value,
+                applied=result.applied,
+                target_stage=result.target_stage,
+            )
 
             # Only a local regeneration repair produces an updated prompt.
             if result.applied and result.updated_final_prompt is not None:
                 final_prompt = result.updated_final_prompt
-                answer = await self._final_provider.generate(final_prompt)
+                answer = await self._generate_answer(final_prompt, emit)
                 attach_final_answer(run_context, answer)
                 rounds += 1
+                await emit(E.EVALUATION_STARTED)
                 report = evaluator.evaluate(final_prompt, answer, run_context)
                 attach_evaluation_report(run_context, report)
+                await emit(
+                    E.EVALUATION_COMPLETED,
+                    passed=report.passed,
+                    overall_score=report.overall_score,
+                )
                 continue
 
             # Terminal local repair (partial/fail) or deferred hand-off: stop.

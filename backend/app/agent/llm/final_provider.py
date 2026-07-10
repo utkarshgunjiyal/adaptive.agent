@@ -20,6 +20,7 @@ calls, no vendor SDKs, no config, no database.
 """
 
 import json
+from collections.abc import AsyncIterator
 from enum import Enum
 from typing import Protocol, runtime_checkable
 
@@ -65,12 +66,26 @@ class FinalAnswer(BaseModel):
 
 @runtime_checkable
 class FinalAnswerProvider(Protocol):
-    """The boundary a concrete LLM adapter implements. Async by design."""
+    """The boundary a concrete LLM adapter implements. Async by design.
+
+    Phase 38 extends the contract *additively* with token streaming:
+    ``generate`` returns the whole ``FinalAnswer`` (non-streaming ``/agent/run``);
+    ``generate_stream`` yields answer text as the provider produces it; and
+    ``build_final_answer`` assembles the ``FinalAnswer`` from the streamed text
+    once the live chunks finish. Providers that predate this contract (only
+    ``generate``) still work — the orchestrator falls back to ``generate``.
+    """
 
     provider: str
     model: str
 
     async def generate(self, final_prompt: FinalPrompt) -> FinalAnswer:
+        ...
+
+    def generate_stream(self, final_prompt: FinalPrompt) -> AsyncIterator[str]:
+        ...
+
+    def build_final_answer(self, final_prompt: FinalPrompt, text: str) -> FinalAnswer:
         ...
 
 
@@ -149,11 +164,47 @@ class DeterministicFinalProvider:
     No randomness, no clock, no network.
     """
 
-    def __init__(self, *, provider: str = "deterministic", model: str = "fake-final-1") -> None:
+    def __init__(
+        self,
+        *,
+        provider: str = "deterministic",
+        model: str = "fake-final-1",
+        chunk_size: int = 24,
+    ) -> None:
         self.provider = provider
         self.model = model
+        self._chunk_size = max(1, chunk_size)
 
     async def generate(self, final_prompt: FinalPrompt) -> FinalAnswer:
+        # Non-streaming path: compose the full text then assemble the answer. The
+        # streaming path reconstructs the *same* text from its chunks, so the two
+        # produce byte-identical FinalAnswers.
+        return self.build_final_answer(final_prompt, self._compose_text(final_prompt))
+
+    async def generate_stream(self, final_prompt: FinalPrompt) -> AsyncIterator[str]:
+        # Deterministic parity: yield the composed answer in fixed-size chunks so
+        # concatenating the chunks reproduces ``generate``'s text exactly.
+        for chunk in self._chunks(self._compose_text(final_prompt)):
+            yield chunk
+
+    def build_final_answer(self, final_prompt: FinalPrompt, text: str) -> FinalAnswer:
+        citation_ids = [c.id for c in final_prompt.citations]
+        return FinalAnswer(
+            text=text,
+            used_citations=citation_ids,
+            usage_metadata=self._usage(final_prompt, text),
+            provider=self.provider,
+            model=self.model,
+            finish_reason="stop",
+            metadata={
+                "grounded": True,
+                "evidence_used": len(final_prompt.evidence_sections),
+                "tool_outputs_used": len(final_prompt.tool_output_sections),
+            },
+        )
+
+    @staticmethod
+    def _compose_text(final_prompt: FinalPrompt) -> str:
         parts = [
             f"Based on the available context, here is the answer to: "
             f"{final_prompt.user_request}"
@@ -168,21 +219,11 @@ class DeterministicFinalProvider:
         citation_ids = [c.id for c in final_prompt.citations]
         if citation_ids:
             parts.append("Citations: " + ", ".join(citation_ids))
+        return " ".join(parts)
 
-        text = " ".join(parts)
-        return FinalAnswer(
-            text=text,
-            used_citations=citation_ids,
-            usage_metadata=self._usage(final_prompt, text),
-            provider=self.provider,
-            model=self.model,
-            finish_reason="stop",
-            metadata={
-                "grounded": True,
-                "evidence_used": len(final_prompt.evidence_sections),
-                "tool_outputs_used": len(final_prompt.tool_output_sections),
-            },
-        )
+    def _chunks(self, text: str) -> list[str]:
+        size = self._chunk_size
+        return [text[i : i + size] for i in range(0, len(text), size)]
 
     @staticmethod
     def _usage(final_prompt: FinalPrompt, text: str) -> dict:
