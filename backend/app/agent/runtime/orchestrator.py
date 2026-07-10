@@ -20,6 +20,11 @@ evaluated and, on failure, a ``RepairRuntime`` decides a repair. Only *local*
 regeneration repairs (updated FinalPrompt → regenerate) are executed, bounded by
 ``max_repair_rounds``; deferred actions (retrieve_more_context, replan, HITL, …)
 are recorded but not executed. With no evaluator, behavior is unchanged.
+
+Phase 26 (additive). ``continue_run`` resumes a rehydrated RunContext (Phase 25)
+without rebuilding context or minting a new run_id: WAITING_FOR_USER/APPROVAL
+fold the resolution into a fresh FinalPrompt and regenerate (then evaluate/repair
+as usual); WAITING_FOR_CONTEXT/REPLAN are surfaced as deferred, never faked.
 """
 
 import inspect
@@ -267,3 +272,160 @@ class AgentOrchestrator:
         if inspect.isawaitable(plan):
             plan = await plan
         return plan
+
+    # -- Resume continuation (Phase 26) --------------------------------------
+
+    async def continue_run(self, run_context: RunContext) -> AgentRunResult:
+        """Continue a *rehydrated* RunContext after a resume (Phase 25).
+
+        The RunContext already carries its working context, behavior profile,
+        prior outputs, and ``metadata['resume']``. Continuation never rebuilds
+        context from the ContextEngine, re-authenticates, or mints a new run_id.
+        WAITING_FOR_USER / WAITING_FOR_APPROVAL fold the resolution into a fresh
+        FinalPrompt and regenerate; WAITING_FOR_CONTEXT / WAITING_FOR_REPLAN are
+        surfaced as deferred (not executed) rather than faking retrieval/replan.
+        """
+        resume = run_context.metadata.get("resume") or {}
+        prior_outcome = self._coerce_outcome(
+            resume.get("runtime_outcome") or run_context.metadata.get("runtime_outcome")
+        )
+        behavior_path = (
+            run_context.behavior_profile.path.value
+            if run_context.behavior_profile is not None
+            else "direct"
+        )
+
+        if prior_outcome in (RuntimeOutcome.WAITING_FOR_USER, RuntimeOutcome.WAITING_FOR_APPROVAL):
+            return await self._continue_generation(run_context, resume, behavior_path)
+        return self._defer_continuation(run_context, resume, prior_outcome, behavior_path)
+
+    async def _continue_generation(self, run_context, resume, behavior_path) -> AgentRunResult:
+        # Rebuild the final prompt from current state and fold in the resolution.
+        final_prompt = self._fold_resume(self._final_context_builder.build(run_context), resume)
+        answer = await self._final_provider.generate(final_prompt)
+        attach_final_answer(run_context, answer)
+
+        result_metadata = {
+            "behavior_decision": run_context.metadata.get("behavior_decision"),
+            "execution_status": run_context.metadata.get("execution_status"),
+            "runtime_status": run_context.metadata.get("planner_runtime", {}).get("runtime_status"),
+            "provider": answer.provider,
+            "model": answer.model,
+            "resumed": True,
+            "resume_kind": resume.get("kind"),
+        }
+
+        evaluator_ran = self._answer_evaluator is not None
+        report = None
+        terminal_repair = None
+        if evaluator_ran:
+            final_prompt, answer, report, records, terminal_repair = (
+                await self._evaluate_and_repair(run_context, final_prompt, answer)
+            )
+            result_metadata.update(
+                {
+                    "evaluation_passed": report.passed,
+                    "evaluation_score": report.overall_score,
+                    "repair_rounds": len(records),
+                    "repair_actions": [r["action"] for r in records],
+                    "provider": answer.provider,
+                    "model": answer.model,
+                }
+            )
+
+        outcome, pending_action, pending_reason = derive_runtime_outcome(
+            evaluator_ran, report, terminal_repair
+        )
+        result_metadata["runtime_outcome"] = outcome.value
+        run_context.metadata["runtime_outcome"] = outcome.value
+
+        return AgentRunResult(
+            run_id=run_context.run_id,
+            user_id=run_context.user_id,
+            thread_id=run_context.thread_id,
+            behavior_path=behavior_path,
+            answer=answer,
+            final_prompt=final_prompt,
+            run_context=run_context,
+            runtime_outcome=outcome,
+            pending_action=pending_action,
+            pending_reason=pending_reason,
+            metadata=result_metadata,
+        )
+
+    def _defer_continuation(self, run_context, resume, prior_outcome, behavior_path) -> AgentRunResult:
+        # Deferred: do NOT execute re-retrieval or replan. Curate a final prompt
+        # (deterministic, no retrieval) and re-surface the waiting state.
+        final_prompt = self._final_context_builder.build(run_context)
+        prior = run_context.metadata.get("final_answer") or {}
+        answer = FinalAnswer(
+            text=prior.get("text", ""),
+            used_citations=list(prior.get("used_citations", [])),
+            usage_metadata=dict(prior.get("usage_metadata", {})),
+            provider=prior.get("provider", ""),
+            model=prior.get("model", ""),
+            finish_reason=prior.get("finish_reason", "deferred"),
+            metadata=dict(prior.get("metadata", {})),
+        )
+        outcome = prior_outcome or RuntimeOutcome.WAITING_FOR_CONTEXT
+        pending_action = resume.get("pending_action")
+        pending_reason = f"continuation for {outcome.value} is not executable in this phase"
+
+        run_context.metadata["runtime_outcome"] = outcome.value
+        run_context.metadata["continuation"] = {
+            "deferred": True,
+            "outcome": outcome.value,
+            "pending_action": pending_action,
+            "resume_kind": resume.get("kind"),
+        }
+        return AgentRunResult(
+            run_id=run_context.run_id,
+            user_id=run_context.user_id,
+            thread_id=run_context.thread_id,
+            behavior_path=behavior_path,
+            answer=answer,
+            final_prompt=final_prompt,
+            run_context=run_context,
+            runtime_outcome=outcome,
+            pending_action=pending_action,
+            pending_reason=pending_reason,
+            metadata={
+                "behavior_decision": run_context.metadata.get("behavior_decision"),
+                "execution_status": run_context.metadata.get("execution_status"),
+                "provider": answer.provider,
+                "model": answer.model,
+                "resumed": True,
+                "deferred": True,
+                "resume_kind": resume.get("kind"),
+                "runtime_outcome": outcome.value,
+            },
+        )
+
+    @staticmethod
+    def _fold_resume(final_prompt: FinalPrompt, resume: dict) -> FinalPrompt:
+        kind = resume.get("kind")
+        value = resume.get("value")
+        pending = resume.get("pending_action")
+        verb = {
+            "approval": "approved this step; proceed and produce the final answer.",
+            "rejection": "rejected this step; do not proceed — explain what was not done.",
+            "clarification": f"provided this clarification: {value!r}. Incorporate it into the answer.",
+            "context_available": "indicated new context is available.",
+            "replan_requested": "requested a re-plan.",
+        }.get(kind, f"provided a {kind} resolution.")
+        note = f"RESUME: the run was waiting on '{pending}'. The user {verb}"
+        return final_prompt.model_copy(
+            update={
+                "final_instructions": f"{final_prompt.final_instructions}\n\n{note}",
+                "metadata": {**final_prompt.metadata, "resume": dict(resume)},
+            }
+        )
+
+    @staticmethod
+    def _coerce_outcome(value):
+        if isinstance(value, RuntimeOutcome):
+            return value
+        try:
+            return RuntimeOutcome(value)
+        except (ValueError, TypeError):
+            return None
