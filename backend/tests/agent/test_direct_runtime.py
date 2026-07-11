@@ -45,17 +45,23 @@ def run(coro):
 # Test doubles
 # --------------------------------------------------------------------------- #
 
-def make_tool(tool_id: str) -> ToolSpec:
+def make_tool(
+    tool_id: str,
+    *,
+    kind: ToolKind = ToolKind.INTERNAL,
+    equivalent: list[str] | None = None,
+) -> ToolSpec:
     return ToolSpec(
         id=tool_id,
         name=tool_id,
-        kind=ToolKind.INTERNAL,
+        kind=kind,
         description=f"{tool_id} tool",
         input_schema={},
         output_schema={},
         risk_level=RiskLevel.LOW,
         side_effects=SideEffectType.READ,
         requires_approval=False,
+        equivalent_capabilities=equivalent or [],
     )
 
 
@@ -194,8 +200,10 @@ def test_retryable_error_handled():
     assert RecoveryStrategy.RETRY.value in strategies
 
 
-def test_fallback_capability_executed():
-    primary = make_tool("primary_cap")
+def test_fallback_capability_executed_with_declared_equivalence():
+    # Cross-capability fallback fires ONLY when the primary declares the next
+    # candidate as an equivalent capability (Phase 46.2.4).
+    primary = make_tool("primary_cap", equivalent=["fallback_cap"])
     fallback = make_tool("fallback_cap")
     executor = FakeExecutor(
         {
@@ -210,6 +218,71 @@ def test_fallback_capability_executed():
     assert [c[0] for c in executor.calls] == ["primary_cap", "fallback_cap"]
     strategies = [e["strategy"] for e in rc.metadata["recovery_events"]]
     assert RecoveryStrategy.FALLBACK.value in strategies
+
+
+def test_fallback_disabled_without_declared_equivalence():
+    # Default: no equivalence declared → the failed primary NEVER escalates into a
+    # structurally different capability. This is the search_repositories → list_issues
+    # regression guard (Phase 46.2.4): the second capability is never invoked.
+    primary = make_tool("mcp.github.search_repositories", kind=ToolKind.MCP)
+    other = make_tool("mcp.github.list_issues", kind=ToolKind.MCP)
+    executor = FakeExecutor(
+        {
+            "mcp.github.search_repositories": [
+                AdapterResult.failure(ErrorCode.UPSTREAM_ERROR, retryable=False)
+            ],
+            "mcp.github.list_issues": [AdapterResult.ok(output={"ok": True})],
+        }
+    )
+    rc = run(DirectRuntime(FakeRetriever([primary, other]), executor).run(direct_context()))
+
+    # Only the selected capability ran; no silent switch to list_issues.
+    assert [c[0] for c in executor.calls] == ["mcp.github.search_repositories"]
+    assert rc.metadata["execution_status"] == ExecutionStatus.NEEDS_USER.value
+    strategies = [e["strategy"] for e in rc.metadata["recovery_events"]]
+    assert RecoveryStrategy.FALLBACK.value not in strategies
+    assert RecoveryStrategy.ASK_USER.value in strategies
+
+
+def test_transient_retry_reinvokes_same_capability():
+    # A transient (retryable) failure retries the SAME tool, never the runner-up —
+    # even when a different candidate is available.
+    primary = make_tool("mcp.github.search_repositories", kind=ToolKind.MCP)
+    other = make_tool("mcp.github.list_issues", kind=ToolKind.MCP)
+    executor = FakeExecutor(
+        {
+            "mcp.github.search_repositories": [
+                AdapterResult.failure(ErrorCode.UPSTREAM_TIMEOUT, retryable=True),
+                AdapterResult.ok(output={"ok": True}),
+            ],
+            "mcp.github.list_issues": [AdapterResult.ok(output={"unexpected": True})],
+        }
+    )
+    rc = run(DirectRuntime(FakeRetriever([primary, other]), executor).run(direct_context()))
+
+    assert [c[0] for c in executor.calls] == [
+        "mcp.github.search_repositories",
+        "mcp.github.search_repositories",
+    ]
+    assert rc.metadata["execution_status"] == ExecutionStatus.SUCCESS.value
+
+
+def test_validation_failure_does_not_switch_tool():
+    # A non-retryable validation error must not retry OR fall back to another tool.
+    primary = make_tool("mcp.github.search_repositories", kind=ToolKind.MCP)
+    other = make_tool("mcp.github.list_issues", kind=ToolKind.MCP)
+    executor = FakeExecutor(
+        {
+            "mcp.github.search_repositories": [
+                AdapterResult.failure(ErrorCode.INVALID_ARGS, retryable=False)
+            ],
+            "mcp.github.list_issues": [AdapterResult.ok(output={"ok": True})],
+        }
+    )
+    rc = run(DirectRuntime(FakeRetriever([primary, other]), executor).run(direct_context()))
+
+    assert [c[0] for c in executor.calls] == ["mcp.github.search_repositories"]
+    assert rc.metadata["execution_status"] == ExecutionStatus.NEEDS_USER.value
 
 
 def test_partial_result_propagated():
@@ -227,7 +300,8 @@ def test_partial_result_propagated():
 
 
 def test_all_failures_ask_user():
-    primary = make_tool("p")
+    # Declared-equivalent fallback also fails → deterministic ask-user.
+    primary = make_tool("p", equivalent=["f"])
     fallback = make_tool("f")
     executor = FakeExecutor(
         {
@@ -236,6 +310,7 @@ def test_all_failures_ask_user():
         }
     )
     rc = run(DirectRuntime(FakeRetriever([primary, fallback]), executor).run(direct_context()))
+    assert [c[0] for c in executor.calls] == ["p", "f"]
     assert rc.metadata["execution_status"] == ExecutionStatus.NEEDS_USER.value
     strategies = [e["strategy"] for e in rc.metadata["recovery_events"]]
     assert RecoveryStrategy.ASK_USER.value in strategies

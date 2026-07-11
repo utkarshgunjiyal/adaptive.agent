@@ -33,6 +33,33 @@ from app.agent.models.tool_spec import ToolSpec
 from app.agent.runtime.context import EvidenceItem
 from app.agent.tools.result import AdapterResult, ErrorCode
 
+# Internal orchestration fields the runtime threads through every call. They are
+# NEVER sent to an external MCP server unless the tool's own input_schema declares
+# them — a third-party server has no business receiving our thread/user/run ids.
+_INTERNAL_ARG_KEYS = frozenset({"thread_id", "user_id", "run_id", "request_id"})
+
+
+def _project_args(tool: ToolSpec, args: dict | None) -> dict:
+    """Project caller arguments strictly onto the tool's discovered input schema.
+
+    An MCP server receives ONLY arguments its ``input_schema`` declares:
+    - When the schema declares ``properties``, keep exactly those keys (strict
+      projection) — internal orchestration fields survive only if the tool itself
+      declares them.
+    - When the schema declares no properties (open/absent schema), forward the
+      caller's keys unchanged EXCEPT the internal orchestration fields, which are
+      always stripped so they can never leak to an external server.
+
+    Values are never inspected or altered; only key membership is enforced.
+    """
+    incoming = dict(args or {})
+    schema = getattr(tool, "input_schema", None)
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    if isinstance(properties, dict) and properties:
+        return {k: v for k, v in incoming.items() if k in properties}
+    return {k: v for k, v in incoming.items() if k not in _INTERNAL_ARG_KEYS}
+
+
 # Map MCP domain error codes onto the existing recovery taxonomy so deterministic
 # recovery keys off familiar ErrorCodes; the precise MCP code is kept in metadata.
 _ERROR_CODE_MAP = {
@@ -104,10 +131,14 @@ class MCPAdapter:
                 capability_id=capability_id,
             )
 
+        # Project caller args strictly onto the discovered schema so internal
+        # orchestration fields never reach the external server (Phase 46.2.4).
+        call_args = _project_args(tool, args)
+
         started = time.perf_counter()
         try:
             result = await asyncio.wait_for(
-                self._client.call_tool(config, binding.tool_name, dict(args or {})),
+                self._client.call_tool(config, binding.tool_name, call_args),
                 timeout=config.timeout_seconds,
             )
         except asyncio.TimeoutError:

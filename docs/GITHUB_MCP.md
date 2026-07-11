@@ -120,6 +120,15 @@ A GitHub failure never blocks startup; document and chat flows keep working.
 - **Execution.** `MCPAdapter` runs the tool through the injected `MCPClient` with a
   bounded timeout + retry; failures map onto the existing recovery taxonomy with a
   safe, vendor-free message (no token, no raw exception text).
+- **Argument projection & tool identity (Phase 46.2.4).** Before a call, `MCPAdapter`
+  **projects arguments strictly onto the discovered `input_schema`**: only keys the
+  tool declares reach the server. Internal orchestration fields (`thread_id`,
+  `user_id`, `run_id`, `request_id`) are dropped unless the tool's schema declares
+  them, so they never leak to GitHub. A **transient retry re-invokes the same tool**;
+  cross-capability fallback to a *different* tool is **disabled by default** and only
+  permitted when a `ToolSpec` explicitly lists the alternative in
+  `equivalent_capabilities`. This guarantees a failed `search_repositories` can never
+  silently escalate into `list_issues`.
 - **Normalization.** A per-server normalizer turns the raw MCP payload into stable
   **Repository / Issue / PullRequest** structures with **bounded body excerpts** and
   whitelisted fields only — then a grounded, human-readable evidence block. The

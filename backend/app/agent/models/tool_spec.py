@@ -82,6 +82,11 @@ class ToolSpec(BaseModel):
     supports_parallel_execution: bool = True
     cacheable: bool = False
     fallback_policy: str | None = None
+    # Capabilities this tool may fall back to when it fails — the ONLY ids the
+    # runtime is allowed to substitute for this one. Empty by default, so
+    # cross-capability fallback is disabled unless an equivalence is declared
+    # explicitly (a retry always re-invokes the same capability regardless).
+    equivalent_capabilities: list[str] = Field(default_factory=list)
 
     # -- Context / observability --------------------------------------------
     context_weight: float = 1.0

@@ -50,6 +50,17 @@ def wired(*, results=None, tools=None, server=None):
 # Success
 # --------------------------------------------------------------------------- #
 
+def props_tool(name="search_repositories", properties=None):
+    return MCPToolDefinition(
+        name=name,
+        description="d",
+        input_schema={
+            "type": "object",
+            "properties": properties or {"query": {"type": "string"}},
+        },
+    )
+
+
 def test_known_capability_executes_and_forwards_args():
     adapter, mgr, reg, client = wired()
     spec = reg.get("mcp.github.create_issue")
@@ -57,6 +68,38 @@ def test_known_capability_executes_and_forwards_args():
     assert res.success
     # arguments forwarded to the client verbatim
     assert client.call_tool_calls[-1] == ("github", "create_issue", {"title": "Bug", "body": "x"})
+
+
+def test_internal_fields_dropped_and_schema_args_retained():
+    # With a declared input_schema, ONLY declared keys reach the server; internal
+    # orchestration fields (thread_id/user_id/run_id/request_id) are dropped
+    # (Phase 46.2.4) even though the runtime always threads them through.
+    adapter, mgr, reg, client = wired(tools={"github": [props_tool("search_repositories")]})
+    spec = reg.get("mcp.github.search_repositories")
+    res = run(adapter.execute(spec, {
+        "query": "my repos",
+        "user_id": "u1", "thread_id": "t1", "run_id": "r1", "request_id": "req1",
+    }))
+    assert res.success
+    assert client.call_tool_calls[-1] == ("github", "search_repositories", {"query": "my repos"})
+
+
+def test_undeclared_arg_is_projected_out():
+    # A key the schema does not declare is dropped even when it is not an internal
+    # field — strict projection against the discovered schema.
+    adapter, mgr, reg, client = wired(tools={"github": [props_tool("search_repositories")]})
+    spec = reg.get("mcp.github.search_repositories")
+    run(adapter.execute(spec, {"query": "q", "not_in_schema": "x"}))
+    assert client.call_tool_calls[-1] == ("github", "search_repositories", {"query": "q"})
+
+
+def test_open_schema_still_drops_internal_fields():
+    # An open schema (no declared properties) forwards caller keys unchanged EXCEPT
+    # internal orchestration fields, which can never leak to an external server.
+    adapter, mgr, reg, client = wired()  # default tool() → {"type": "object"}
+    spec = reg.get("mcp.github.create_issue")
+    run(adapter.execute(spec, {"title": "x", "user_id": "u", "thread_id": "t"}))
+    assert client.call_tool_calls[-1] == ("github", "create_issue", {"title": "x"})
 
 
 def test_success_result_is_adapter_result_with_provenance():

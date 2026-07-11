@@ -162,8 +162,17 @@ class DirectRuntime:
 
         chosen = primary
 
-        # ...then fall back to the next best capability, at most once.
-        if not result.success and len(matches) > 1:
+        # ...then fall back to the next best capability, at most once — but ONLY
+        # to a capability the selected tool explicitly declares as equivalent
+        # (Phase 46.2.4). A retry re-invokes the same tool (above); a fallback is a
+        # deliberate switch to a DIFFERENT tool and must never happen silently. With
+        # no declared equivalence the fallback is disabled, so a failed
+        # search_repositories can never escalate into list_issues.
+        if (
+            not result.success
+            and len(matches) > 1
+            and matches[1].tool.id in (primary.equivalent_capabilities or [])
+        ):
             fallback = matches[1].tool
             recovery.append(
                 {
