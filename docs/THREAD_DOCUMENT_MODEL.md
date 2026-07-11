@@ -272,6 +272,41 @@ through to synthesis:
 The real-LLM provider produces richer prose from the same comparison-marked prompt;
 the deterministic path guarantees the *structure* even offline.
 
+## Evidence compression for comparisons (Phase 44.2)
+
+Phase 44.1 guaranteed the comparison *structure* but still printed whole retrieved
+chunks — duplicated bullets, biographical noise, opaque `E#` citations, and lexical
+shared/unique *token* lists. Phase 44.2 compresses the deterministic/offline
+fallback into a concise, grounded answer (module
+[`app/agent/llm/comparison_synthesis.py`](../backend/app/agent/llm/comparison_synthesis.py),
+pure and config-free). **Only the deterministic fallback changes** — the real-LLM
+path, retrieval, ownership, resolver, planner, checkpoint/resume, and frontend are
+untouched.
+
+- **Category → keyword taxonomy.** A maintainable, ordered taxonomy (Languages,
+  Frontend, Backend, Databases/Storage, AI/ML, Cloud/Deployment,
+  Analytics/Automation, Observability/Evaluation) maps canonical display terms to
+  surface aliases. Matching is case-insensitive and **whole-token**, so `SQL` does
+  not fire inside `MySQL` and `Java` not inside `JavaScript`. New technologies are
+  added by editing the taxonomy — no other code changes.
+- **Compression + de-duplication.** Retrieved chunk text is normalized (whitespace,
+  chunk-wrapped lines) and technical skills are extracted per document and grouped
+  by category; repeated/overlapping chunks collapse (each term appears once). Terms
+  per category, similarity lines, and project statements are bounded, so the answer
+  stays compact regardless of how much text was retrieved.
+- **Noise exclusion.** Contact, education, extracurricular, leadership-only, and
+  header/honorific content is excluded; the extractor emits only recognized
+  technical terms, so biography never appears as a "skill".
+- **Concept-based comparison.** Similarities and differences are computed over
+  normalized categories and canonical terms (shared terms + shared category
+  concepts; per-document unique terms + unique category concepts) rather than shared
+  words. Nothing is claimed beyond the matched evidence — no skill is invented.
+- **Citation cleanup.** User-facing output uses **filename + page** only
+  (de-duplicated). Opaque `E#` ids and document UUIDs never appear in the answer
+  (they remain in metadata/logging). Streaming and non-streaming output stay
+  byte-identical; provider precedence is unchanged (real LLM preferred when
+  configured, deterministic as the offline fallback).
+
 ---
 
 ## Thread switching semantics

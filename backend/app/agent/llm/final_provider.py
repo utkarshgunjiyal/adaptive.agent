@@ -170,24 +170,8 @@ def render_final_prompt(final_prompt: FinalPrompt) -> list[FinalPromptMessage]:
 
 
 # --------------------------------------------------------------------------- #
-# Source-aware comparison synthesis (Phase 44.1)
+# Source-aware comparison synthesis (Phase 44.1 → compressed in Phase 44.2)
 # --------------------------------------------------------------------------- #
-
-# Common words excluded from the deterministic lexical similarity/difference
-# comparison so shared/unique "themes" reflect substantive terms, not glue words.
-_STOPWORDS = frozenset(
-    {
-        "the", "and", "for", "with", "that", "this", "from", "have", "has",
-        "are", "was", "were", "will", "would", "their", "they", "them", "our",
-        "your", "these", "those", "into", "over", "under", "than", "then",
-        "such", "also", "which", "while", "been", "being", "both", "each",
-        "more", "most", "other", "some", "any", "all", "can", "may", "not",
-        "but", "his", "her", "its", "who", "whom", "what", "when", "where",
-        "how", "why", "including", "included", "using", "used", "based",
-        "within", "across", "between", "document", "documents",
-    }
-)
-
 
 def _section_filename(section) -> str | None:
     """The source filename for an evidence section, from metadata or a
@@ -199,132 +183,36 @@ def _section_filename(section) -> str | None:
     return filename or None
 
 
-def _source_label(section) -> str:
-    """A source-aware citation for an evidence section: ``filename p.N`` (or the
-    filename alone, or the bare evidence id when there is no document provenance)."""
-    filename = _section_filename(section)
-    if not filename:
-        return f"[{section.id}]"
-    page = (section.metadata or {}).get("page")
-    if page is not None:
-        return f"{filename} p.{page}"
-    return filename
-
-
-def _group_evidence_by_document(final_prompt: FinalPrompt) -> dict:
-    """Group evidence sections by their source filename, preserving order — the
-    deterministic grouping that keeps each document's evidence separate."""
-    grouped: dict[str, list] = {}
-    for section in final_prompt.evidence_sections:
-        filename = _section_filename(section)
-        if filename is None:
-            continue
-        grouped.setdefault(filename, []).append(section)
-    return grouped
-
-
-def _keywords(text: str) -> set:
-    tokens = set()
-    for raw in "".join(c.lower() if c.isalnum() else " " for c in text).split():
-        if len(raw) >= 4 and raw not in _STOPWORDS and not raw.isdigit():
-            tokens.add(raw)
-    return tokens
-
-
 def _compose_comparison_text(final_prompt: FinalPrompt) -> str:
-    """Synthesize a source-separated comparison from grouped evidence: a labelled
-    section per document, then Similarities, Differences, and Sources — with
-    filename+page citations and no cross-document blending. Deterministic and
-    grounded; the real-LLM provider produces a richer answer from the same
-    structured prompt, but this fallback must never blend the documents."""
-    grouped = _group_evidence_by_document(final_prompt)
+    """Synthesize a source-separated comparison from the retrieved evidence.
 
-    # Cover every resolved document in order, so a document that produced no
-    # evidence is still represented (balanced comparison). Fall back to the
-    # filenames that actually carry evidence when the scope list is absent.
+    Phase 44.2: evidence is compressed into concise, category-grouped technical
+    skills (never a raw chunk dump), de-duplicated and stripped of biographical
+    noise; similarities/differences are computed over normalized concepts, and
+    citations are filename+page only. The heavy lifting lives in
+    ``comparison_synthesis`` so it is independently testable; this shim only maps
+    the FinalPrompt sections into that pure function's inputs. Deterministic and
+    grounded — the real-LLM provider produces richer prose from the same prompt."""
+    from app.agent.llm.comparison_synthesis import compose_comparison
+
     documents = [
         str(d.get("filename", "document"))
         for d in (final_prompt.metadata.get("comparison_documents") or [])
         if d.get("filename")
     ]
-    for filename in grouped:
-        if filename not in documents:
-            documents.append(filename)
-
-    lines: list[str] = [
-        f"Comparison of the selected documents for: {final_prompt.user_request}",
-        "",
+    evidence = [
+        {
+            "filename": _section_filename(section),
+            "page": (section.metadata or {}).get("page"),
+            "content": section.content,
+        }
+        for section in final_prompt.evidence_sections
     ]
-
-    for index, filename in enumerate(documents, start=1):
-        lines.append(f"Document {index} — {filename}")
-        sections = grouped.get(filename) or []
-        if not sections:
-            lines.append(f"No relevant evidence was found in {filename}.")
-        else:
-            for section in sections:
-                lines.append(f"- {section.content} ({_source_label(section)})")
-        lines.append("")
-
-    with_evidence = [fn for fn in documents if grouped.get(fn)]
-    doc_keywords = {
-        fn: set().union(*[_keywords(s.content) for s in grouped[fn]])
-        for fn in with_evidence
-    }
-
-    lines.append("Similarities")
-    if len(with_evidence) >= 2:
-        shared = set.intersection(*doc_keywords.values())
-        if shared:
-            lines.append(
-                "Shared themes across the documents: "
-                + ", ".join(sorted(shared)[:12])
-                + "."
-            )
-        else:
-            lines.append(
-                "Both documents provide evidence relevant to the request; see the "
-                "per-document sections above for specifics."
-            )
-    else:
-        lines.append(
-            "A similarity comparison requires relevant evidence from at least two "
-            "documents; it is not available for this request."
-        )
-    lines.append("")
-
-    lines.append("Differences")
-    if len(with_evidence) >= 2:
-        for fn in with_evidence:
-            others = set().union(
-                *[kw for other, kw in doc_keywords.items() if other != fn]
-            )
-            unique = doc_keywords[fn] - others
-            if unique:
-                lines.append(f"Only in {fn}: " + ", ".join(sorted(unique)[:12]) + ".")
-            else:
-                lines.append(f"No document-unique themes were detected in {fn}.")
-    empty = [fn for fn in documents if not grouped.get(fn)]
-    for fn in empty:
-        lines.append(f"No relevant evidence was found in {fn} to compare.")
-    if len(with_evidence) < 2 and not empty:
-        lines.append(
-            "A difference comparison requires relevant evidence from at least two "
-            "documents; it is not available for this request."
-        )
-    lines.append("")
-
-    lines.append("Sources")
-    seen: list[str] = []
-    for section in final_prompt.evidence_sections:
-        label = _source_label(section)
-        if label not in seen:
-            seen.append(label)
-            lines.append(f"- {label}")
-    if not seen:
-        lines.append("- No sources were available.")
-
-    return "\n".join(lines).rstrip()
+    return compose_comparison(
+        query=final_prompt.user_request,
+        documents=documents,
+        evidence=evidence,
+    )
 
 
 # --------------------------------------------------------------------------- #

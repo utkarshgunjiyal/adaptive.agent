@@ -75,8 +75,8 @@ config-free and unit-testable without a database or credentials.
 | Field | Value |
 |---|---|
 | **Branch** | `v2-autonomous-platform` |
-| **Latest commit** | `V2 Phase 44.1: Source-Aware Comparison Output` |
-| **Test count** | **798 backend** + **63 frontend** (Vitest) |
+| **Latest commit** | `V2 Phase 44.2: Evidence Compression & Comparison Synthesis` |
+| **Test count** | **814 backend** + **63 frontend** (Vitest) |
 | **Python** | 3.11 (developed on 3.11.15) |
 | **Test command** | `cd backend && python -m pytest` |
 
@@ -581,6 +581,44 @@ carried through to synthesis.
   `white-space: pre-wrap` (`.msg p`), so the multi-line comparison displays with
   its sections intact.
 
+### Phase 44.2 — Evidence Compression & Comparison Synthesis
+Phase 44.1 fixed the *structure* of the deterministic comparison but still dumped
+raw retrieved chunks — duplicated bullets, biographical noise, opaque `E#`
+citations, and lexical shared/unique *token* lists. Phase 44.2 improves **only the
+deterministic/offline fallback provider** (`AGENT_USE_REAL_LLM=false`); the
+real-LLM path, retrieval, ownership, resolver, planner, checkpoint/resume, and
+frontend are untouched. New module
+[`app/agent/llm/comparison_synthesis.py`](llm/comparison_synthesis.py) — pure,
+config-free, no LLM/clock/network.
+- **Category → keyword taxonomy.** A maintainable ordered taxonomy (Languages,
+  Frontend, Backend, Databases/Storage, AI/ML, Cloud/Deployment,
+  Analytics/Automation, Observability/Evaluation) maps canonical display terms to
+  surface aliases. Matching is case-insensitive and **whole-token** (so `SQL` does
+  not fire inside `MySQL`, `Java` not inside `JavaScript`); extend by editing the
+  taxonomy only.
+- **Evidence compression + de-dup.** Retrieved chunk text is normalized
+  (whitespace, wrapped lines), technical skills are extracted per document and
+  grouped by category, and repeated/overlapping chunks collapse naturally (each
+  term appears once). Terms-per-category, similarity lines, and project lines are
+  bounded, so the answer stays compact regardless of chunk volume.
+- **Noise exclusion.** Contact / education / extracurricular / leadership-only /
+  header/honorific content is excluded from statements and project lines; the
+  category extractor only emits recognized technical terms, so biography never
+  surfaces as a "skill".
+- **Concept-based similarities/differences.** Replaces shared/unique token lists
+  with normalized-concept comparison — shared canonical terms + shared category
+  concepts ("Both include analytics and automation"); per-document unique terms +
+  unique category concepts. Nothing is claimed beyond the matched evidence.
+- **Citation cleanup.** User-facing output uses **filename + page** only
+  (de-duplicated); opaque `E#` ids and document UUIDs never appear (they remain in
+  metadata/logging). A concise **Technical Projects** section surfaces
+  implementation statements (action verb + technical term), bounded and filtered.
+- **Provider precedence preserved.** Real LLM is still preferred when configured
+  (`factory.build_orchestrator`); deterministic is the offline fallback; streaming
+  and non-streaming stay byte-identical. The **non-comparison path is unchanged**
+  (single-doc / chat / QA answers are byte-identical). Nothing is invented — every
+  rendered skill is matched from the retrieved evidence.
+
 ---
 
 ## Runtime Pipeline
@@ -1018,6 +1056,7 @@ reason — most of the codebase relies on them.
 | **Phase 43 ✅** | **Thread/Document/Context/Connector Integration** | *Done.* Deterministic pre-planning scope layer: interpreter (intent vs scope), ownership-validated document resolver, early **Scope Gate** (ambiguous/unauthorized doc ref → `WAITING_FOR_USER` + safe candidates + checkpoint, resumes the same run), connectors + capability **eligibility** (existence/health/scopes; MCP-server-vs-connector distinction), `RunRecorder`, thread/document routes on `get_current_user`, Qdrant `search_scoped` (user + validated document-id set + pages/thread). `selected_document_ids` are revalidated hints. **Boundary only** — no real OAuth/token refresh/secret storage; in-memory connector registry; legacy V1.5 routes keep the dev-user stub. |
 | **Phase 44 ✅** | **Stabilization, Retrieval Quality & UX Reliability** | *Done.* Correctness/reliability hardening (no new architecture). Hardened ambiguity policy (auto-resolve only on single-doc / explicit UI selection / prior-turn single doc; weak "last uploaded/indexed/newest" signals never silently resolve); comparison-aware **per-document balanced retrieval** (`PER_DOCUMENT_CHUNK_QUOTA`/`FINAL_CHUNK_BUDGET`, round-robin + de-dup); source-aware final context (`[DOCUMENT] [PAGE]` labels, per-doc sections + Similarities/Differences, no cross-doc merging); deterministic **BM25 lexical reranker** over chunk text; intent **capability gate** (`get_page_summary` → explicit page refs; `save_user_preference` → explicit save language only); instant persistent "New conversation" thread; upload polling/inline-error UX + collapsed runtime activity; safe `document_storage_unavailable` (503); Caddy `/threads` matcher + env-driven MinIO creds. Phase 43 pause/resume contract unchanged; embeddings still the hash stub. |
 | **Phase 44.1 ✅** | **Source-Aware Comparison Output** | *Done.* Fixes the demo's blended two-document comparison. The comparison intent (interpretation + resolved `documents`) is carried on `FinalPrompt.metadata` (`is_comparison`, `comparison_documents`) into synthesis; the **deterministic fallback provider** now groups evidence per document and emits a source-separated answer — `Document N — filename` sections + `Similarities` + `Differences` + `Sources`, with filename+page citations, covering every selected document (empty ones stated explicitly) and never blending across documents. Non-comparison path byte-identical; no new planner/interpreter; frontend already renders multi-line answers. |
+| **Phase 44.2 ✅** | **Evidence Compression & Comparison Synthesis** | *Done.* Improves only the deterministic/offline fallback comparison. New pure `comparison_synthesis.py`: a maintainable category→keyword taxonomy compresses retrieved chunks into concise, category-grouped technical skills (whole-token matching, normalized wrapped lines, de-duplicated), excludes contact/education/extracurricular/leadership noise, computes **concept-based** similarities/differences (not token lists), and cites **filename+page only** (no opaque `E#`). Output is bounded (no raw chunk dumps). Provider precedence, real-LLM path, retrieval, planner, checkpoint/resume, and frontend unchanged; non-comparison output byte-identical; streaming==non-streaming. |
 
 **Phase 41A current limitations (intentional scope boundary).** Real transports
 ship, but no MCP dependency/live server is required: `agent_mcp_enabled` defaults
@@ -1079,26 +1118,37 @@ credentials referenced opaquely). **MCP stays off by default.** The legacy V1.5
 non-agent routes keep the **dev-user stub**. The per-document quota and final chunk
 budget are fixed constants (configurable, not adaptive).
 
-**Phase 44.1 current limitations (intentional scope boundary).** The deterministic
-provider's `Similarities`/`Differences` are a **lexical** shared-vs-unique term
-comparison, not semantic reasoning — it is the offline/demo fallback; the real-LLM
-provider produces richer prose from the *same* comparison-marked prompt. Comparison
+**Phase 44.1 current limitations (intentional scope boundary).** Comparison
 detection and grouping rely on evidence carrying `filename`/`page` provenance (the
-scope gate attaches it); evidence without document provenance falls back to bare
-`[E#]` labels. No new planner or interpreter is introduced — the intent is reused,
-not recomputed.
+scope gate attaches it). No new planner or interpreter is introduced — the intent is
+reused, not recomputed. *(Phase 44.1's lexical shared/unique token lists are
+superseded by Phase 44.2's concept-based comparison, below.)*
+
+**Phase 44.2 current limitations (intentional scope boundary).** The deterministic
+comparison is **keyword/taxonomy-driven**, not semantic: a skill is extracted only
+when a taxonomy term (or alias) literally appears in the retrieved chunk text, so a
+skill phrased entirely outside the taxonomy is not surfaced (extend the taxonomy to
+cover it). Similarities/differences compare **normalized categories and canonical
+terms**, not free-form prose — this is the offline/demo fallback; the real-LLM
+provider (`AGENT_USE_REAL_LLM=true`) produces richer, fully prose comparisons from
+the *same* comparison-marked prompt. Extraction depends on evidence carrying
+`filename`/`page` provenance. No live/paid API is called by the fallback or tests.
 
 ---
 
 ## Test Status
 
-- **Backend:** **798 passing** (1 benign Starlette deprecation warning),
+- **Backend:** **814 passing** (1 benign Starlette deprecation warning),
   `cd backend && python -m pytest`, ~2–3s. Phase 44 adds coverage for the hardened
   ambiguity policy, per-document balanced retrieval, source-aware final context,
   the BM25 lexical reranker, the intent capability gate, and the safe
   `document_storage_unavailable` error; Phase 44.1 adds `test_comparison_output.py`
-  (builder comparison flag, deterministic source-separated synthesis, shared/unique
-  term separation, empty-document coverage, and the reported demo input end-to-end).
+  (builder comparison flag, deterministic source-separated synthesis, empty-document
+  coverage, and the reported demo input end-to-end); Phase 44.2 adds
+  `test_comparison_synthesis.py` (taxonomy extraction, noise exclusion, chunk
+  de-duplication, wrapped-line normalization, concept similarities/differences, no
+  `E#` citations, bounded length, no invented skills, and a résumé-like integration
+  test — plus streaming==non-streaming and the unchanged non-comparison path).
   - `tests/agent/` — unit tests for every runtime stage, incl. the DemoEvaluator
     and the Phase-43/44 interpreter/resolver/scope-gate/connectors/document-
     retrieval/thread-document e2e (config-free, fakes + `asyncio.run`).

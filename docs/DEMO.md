@@ -103,17 +103,23 @@ show it end-to-end:
    `created_at`). The UI shows a **document picker**; picking a document resumes the
    **same run** — the backend revalidates the id against the owned set and continues
    retrieval over the chosen document.
-6. **Comparison (source-separated answer).** Select two documents (or ask to
-   compare them) and ask e.g. `Compare the technical skills in these two documents`.
-   Retrieval is balanced **per document** so neither dominates, and the answer comes
-   back **source-separated** — a `Document N — filename` section per document, then
-   explicit **Similarities** and **Differences**, then **Sources**, with citations
-   that name the file and page (`resume.pdf p.1`). Facts are never merged across the
-   two files, and a selected document with no matching evidence is stated explicitly
-   ("No relevant evidence was found in {filename}.") rather than dropped. This holds
-   even in the default **demo** mode (`AGENT_USE_REAL_LLM=false`): the deterministic
-   fallback provider synthesizes the same structure from the grouped evidence, so the
-   comparison is never a single blended paragraph (Phase 44.1).
+6. **Comparison (compact, source-separated answer).** Select two documents (or ask
+   to compare them) and ask e.g. `Compare the technical skills in these two
+   documents`. Retrieval is balanced **per document** so neither dominates, and the
+   answer comes back **compressed and source-separated** — a `Document N — filename`
+   section per document with skills grouped by category (Languages, Backend, AI /
+   Machine Learning, Analytics / Automation, …), then **Similarities** and
+   **Differences** stated as concepts (e.g. "Both include Python"; "one is
+   analytics-focused, the other adds AI engineering and backend APIs"), then
+   **Sources** citing file and page (`resume.pdf p.1`). Even in the default **demo**
+   mode (`AGENT_USE_REAL_LLM=false`) the deterministic fallback compresses the
+   retrieved chunks into concise skills — **no raw chunk dumps, no duplicated
+   bullets, no contact/education/extracurricular noise, and no opaque `E#`
+   citations** (Phase 44.2). Facts are never merged across the two files, and a
+   selected document with no matching technical evidence is stated explicitly ("No
+   relevant technical-skill evidence was found in {filename}.") rather than dropped.
+   Enabling the real LLM (`AGENT_USE_REAL_LLM=true`) yields richer prose from the
+   same comparison-marked prompt.
 
 Filenames are only for matching/display; retrieval always uses the stable
 `document_id`. Client-sent `selected_document_ids` are hints, revalidated

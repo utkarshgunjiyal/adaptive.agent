@@ -118,12 +118,13 @@ def test_shared_and_unique_terms_are_separated():
         ],
     )
     text = run(DeterministicFinalProvider().generate(_build(rc))).text
-    # "python" is shared; the framework/db terms are document-unique.
+    # Python is shared; the framework/db terms are document-unique. Concepts are
+    # compared (not shared/unique *token* lists), and terms use canonical casing.
     sims = text.split("Similarities", 1)[1].split("Differences", 1)[0]
     diffs = text.split("Differences", 1)[1].split("Sources", 1)[0]
-    assert "python" in sims
-    assert "fastapi" in diffs and "kubernetes" in diffs
-    assert "python" not in diffs
+    assert "Python" in sims
+    assert "FastAPI" in diffs and "Kubernetes" in diffs
+    assert "Python" not in diffs
 
 
 # --------------------------------------------------------------------------- #
@@ -143,7 +144,7 @@ def test_document_without_evidence_is_still_covered():
     )
     text = run(DeterministicFinalProvider().generate(_build(rc))).text
     assert "Document 2 — my_final_resume.pdf" in text
-    assert "No relevant evidence was found in my_final_resume.pdf." in text
+    assert "No relevant technical-skill evidence was found in my_final_resume.pdf." in text
 
 
 # --------------------------------------------------------------------------- #
@@ -175,9 +176,14 @@ def test_reported_demo_input_produces_structured_comparison():
     ):
         assert expected in text, expected
 
-    # Both documents contribute evidence — neither dominates and none is dropped.
-    assert "Backend: Python, FastAPI, Redis." in text
-    assert "Cloud: AWS, Kubernetes, Terraform." in text
+    # Both documents contribute compressed skill evidence — neither dominates and
+    # none is dropped. Terms are extracted (not raw chunks) in canonical casing.
+    for term in ("Python", "FastAPI", "Redis", "MongoDB", "Qdrant"):
+        assert term in text, term
+    for term in ("AWS", "Kubernetes", "Terraform"):
+        assert term in text, term
+    # The raw chunk prefixes are compressed away — no verbatim chunk dump.
+    assert "Backend: Python, FastAPI, Redis." not in text
     # Streaming and non-streaming stay byte-identical for the comparison path.
     provider = DeterministicFinalProvider()
 
