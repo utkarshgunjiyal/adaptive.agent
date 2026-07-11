@@ -49,7 +49,7 @@
 	import auth.conf
 
 	# Backend API + health + SSE. Buffering OFF for token streaming.
-	@backend path /agent/* /health/* /chat/* /documents/* /jobs/* /memory/*
+	@backend path /agent/* /health/* /chat/* /documents/* /jobs/* /memory/* /threads /threads/*
 	handle @backend {
 		reverse_proxy {$BACKEND_UPSTREAM} {
 			flush_interval -1
