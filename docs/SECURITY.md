@@ -8,6 +8,19 @@ Security posture and the checklist that must be completed before public exposure
    (`get_current_user` → `dev_user` in `app/routes/agent.py`). It must be replaced
    or wired to real authentication (the dependency is overridable) **before public
    deployment**. Until then, treat every endpoint as unauthenticated.
+
+   **Phase 42B startup guard.** With `ENVIRONMENT=production`, the backend now
+   **refuses to boot** while the dev stub is active unless `ALLOW_DEV_AUTH=true`
+   is explicitly set — so a public deployment cannot *silently* authenticate
+   everyone as `dev_user`. Options:
+   - **Public multi-user:** wire real auth (override `get_current_user`) and leave
+     `ALLOW_DEV_AUTH=false`.
+   - **Private demo:** run `ENVIRONMENT=demo` (or set `ALLOW_DEV_AUTH=true`) **and**
+     lock the edge with Caddy basic auth (`deploy/auth.conf`). The app auth stays
+     explicitly development-only.
+
+   Local development is unaffected (the guard only applies to
+   `ENVIRONMENT=production`).
 2. **CORS.** Set `CORS_ORIGINS` to explicit origins (never `*`). Credentialed
    requests are automatically disabled when `CORS_ORIGINS="*"`, so `*` cannot be
    combined with cookies.
@@ -34,6 +47,21 @@ Security posture and the checklist that must be completed before public exposure
 - **No secret exposure**: MCP `headers`/`environment`/`working_directory` never
   enter a `ToolSpec`, `RuntimeEvent`, metric label, or log line.
 - **Metrics label guard**: high-cardinality/sensitive keys are dropped.
+
+## Demo mode boundaries (Phase 42B)
+
+`DEMO_MODE` wires a `DemoEvaluator` onto the **existing** answer-evaluator seam so
+marked prompts reach a genuine HITL pause. It is safe by construction:
+
+- **Off by default** and **refused in production** (the startup guard blocks
+  `DEMO_MODE=true` when `ENVIRONMENT=production`).
+- It never bypasses the runtime state machine, uses the existing planner/provider/
+  tool interfaces, emits genuine `RuntimeEvent`s, and exercises the real
+  checkpoint/resume path.
+- The UI fabricates no events. Demo answers use the deterministic provider (marked
+  as such); no fake business logic lives in React.
+- Tests (`tests/agent/test_demo_evaluator.py`, `tests/deploy/test_startup_guard.py`)
+  prove it is inert unless explicitly enabled and cannot activate in production.
 
 ## Data handling
 

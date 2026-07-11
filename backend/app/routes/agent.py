@@ -77,26 +77,47 @@ _checkpoint_store = None
 _coordinator: AsyncResumeCoordinator | None = None
 _use_real_llm = False
 _mcp_registry_manager = None
+_demo_mode = False
+
+
+def _build_demo_evaluator():
+    """Lazily build the demo evaluator (config-free import; pydantic only)."""
+    from app.agent.demo import DemoEvaluator
+
+    return DemoEvaluator()
 
 
 def _get_orchestrator():
     global _orchestrator
     if _orchestrator is None:
+        # Demo mode wires the EXISTING answer-evaluator seam so marked demo
+        # prompts reach a genuine HITL pause (real checkpoint + resume). Off by
+        # default → the runtime has no evaluator and is byte-identical.
+        evaluator = _build_demo_evaluator() if _demo_mode else None
         _orchestrator = build_default_runtime(
-            use_real_llm=_use_real_llm, mcp_registry_manager=_mcp_registry_manager
+            use_real_llm=_use_real_llm,
+            mcp_registry_manager=_mcp_registry_manager,
+            answer_evaluator=evaluator,
         )
     return _orchestrator
 
 
-def configure_agent_runtime(*, use_real_llm: bool = False, mcp_registry_manager=None) -> None:
+def configure_agent_runtime(
+    *, use_real_llm: bool = False, mcp_registry_manager=None, demo_mode: bool = False
+) -> None:
     """Composition-root hook: select the LLM provider mode (and optionally a
     pre-discovered MCP registry manager) before the shared orchestrator is first
     built. Providers/capabilities are built once and shared across /agent/run,
     /agent/resume and /agent/run/stream. Routes never read config; the MCP manager
-    is composed and its transport lifecycle owned by the composition root."""
-    global _use_real_llm, _mcp_registry_manager, _orchestrator, _coordinator
+    is composed and its transport lifecycle owned by the composition root.
+
+    ``demo_mode`` (Phase 42B, off by default) additionally wires a DemoEvaluator
+    onto the existing answer-evaluator seam for a deterministic, resumable HITL
+    demo. It never activates unless explicitly passed true."""
+    global _use_real_llm, _mcp_registry_manager, _demo_mode, _orchestrator, _coordinator
     _use_real_llm = bool(use_real_llm)
     _mcp_registry_manager = mcp_registry_manager
+    _demo_mode = bool(demo_mode)
     _orchestrator = None  # rebuild with the selected providers/capabilities on next use
     _coordinator = None
 

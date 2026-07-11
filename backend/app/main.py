@@ -25,7 +25,9 @@ from app.routes.agent import (
     configure_checkpoint_store,
     configure_agent_runtime,
     configure_sse,
+    get_current_user,
 )
+from app.deploy.startup_guard import check_startup_safety
 from app.agent.checkpoint.composition import select_checkpoint_store
 from app.agent.checkpoint.mongo_store import mongo_collection_from_uri
 
@@ -71,6 +73,23 @@ async def lifespan(app: FastAPI):
             "environment": settings.environment,
         },
     )
+
+    # Production auth/demo gate (Phase 42B). Refuse to boot an unsafe production
+    # deployment: the dev auth stub silently authenticating everyone as
+    # 'dev_user', or demo mode running in production. Dev auth is "active" unless
+    # a real ``get_current_user`` has been installed via dependency override.
+    dev_auth_active = get_current_user not in app.dependency_overrides
+    problems = check_startup_safety(
+        environment=settings.environment,
+        dev_auth_active=dev_auth_active,
+        allow_dev_auth=settings.allow_dev_auth,
+        demo_mode=settings.demo_mode,
+    )
+    if problems:
+        for problem in problems:
+            logger.error("app.startup_refused", extra={"reason": problem})
+        raise RuntimeError("Refusing to start: " + " | ".join(problems))
+
     await ensure_indexes()
     logger.info("app.indexes_ready")
 
@@ -115,8 +134,12 @@ async def lifespan(app: FastAPI):
     configure_agent_runtime(
         use_real_llm=settings.agent_use_real_llm,
         mcp_registry_manager=mcp_registry_manager,
+        demo_mode=settings.demo_mode,
     )
-    logger.info("app.agent_llm_ready", extra={"use_real_llm": settings.agent_use_real_llm})
+    logger.info(
+        "app.agent_llm_ready",
+        extra={"use_real_llm": settings.agent_use_real_llm, "demo_mode": settings.demo_mode},
+    )
 
     # SSE keep-alive interval (Phase 42A). Routes stay config-free; set here.
     configure_sse(heartbeat_seconds=settings.sse_heartbeat_seconds)

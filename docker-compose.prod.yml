@@ -1,58 +1,151 @@
-# Production-like override. Use together with the base file:
+# Production override for a single Ubuntu VM (Phase 42B). Use with the base file:
 #
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 #
-# Differences from the dev base:
-# - infra ports are NOT published to the host (reachable only on the internal
-#   network) to reduce attack surface;
-# - operational features are turned on (rate limiting via Redis, metrics,
-#   Mongo-backed checkpoints, real LLM);
-# - restart: always;
-# - all secrets/credentials come from the host environment or a root .env —
-#   nothing production-sensitive is hard-coded here.
+# Topology: Caddy is the ONLY publicly-exposed service (80/443, automatic HTTPS).
+# It reverse-proxies "/" -> frontend and "/agent" (+ health/chat/…) -> backend,
+# with SSE buffering off. Backend, frontend, and ALL infrastructure services are
+# reachable only on the internal Docker network — no host ports.
 #
-# REQUIRED before deploy: set strong MINIO_ROOT_USER/PASSWORD, a real
-# ANTHROPIC_API_KEY (or OPENROUTER_API_KEY), CORS_ORIGINS to your app origin, and
-# replace the dev auth stub with real authentication (see docs/SECURITY.md).
+# Differences from the dev base:
+# - infra + app ports are NOT published (only Caddy publishes 80/443);
+# - operational features on (rate limiting via Redis, metrics, Mongo checkpoints,
+#   real LLM); restart: always; resource limits; JSON log rotation;
+# - all secrets come from the host environment / a root .env — nothing sensitive
+#   is hard-coded here.
+#
+# SAFE BY DEFAULT: with ENVIRONMENT=production and the development auth stub still
+# active, the backend REFUSES to start unless ALLOW_DEV_AUTH=true is explicitly
+# set (a private demo behind Caddy auth). Wire real auth for public use, or run
+# the private demo via docker-compose.demo.yml. See docs/SECURITY.md.
+#
+# REQUIRED before deploy: DOMAIN, TLS_EMAIL, CORS_ORIGINS=https://$DOMAIN,
+# strong MINIO_ROOT_USER/PASSWORD, and a real ANTHROPIC_API_KEY (or
+# OPENROUTER_API_KEY). Validate first: `python -m app.deploy.env_check`.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
 
 services:
   mongodb:
     ports: []
     restart: always
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+        reservations:
+          memory: 256m
 
   redis:
     ports: []
     restart: always
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 512m
 
   qdrant:
     ports: []
     restart: always
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+        reservations:
+          memory: 256m
 
   minio:
-    ports:
-      - "9001:9001"   # console only; the S3 API stays internal
+    # Console + S3 API stay internal (reach the console via an SSH tunnel:
+    # `ssh -L 9001:localhost:9001 vm` then open http://localhost:9001).
+    ports: []
     restart: always
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 1g
 
   backend:
     environment:
-      ENVIRONMENT: production
+      ENVIRONMENT: ${ENVIRONMENT:-production}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS to your app origin(s)}
+      CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS to your app origin(s), e.g. https://your-domain}
       AGENT_CHECKPOINT_BACKEND: mongo
-      AGENT_USE_REAL_LLM: "true"
+      AGENT_USE_REAL_LLM: ${AGENT_USE_REAL_LLM:-true}
       METRICS_ENABLED: "true"
       METRICS_BACKEND: ${METRICS_BACKEND:-memory}
       RATE_LIMIT_ENABLED: "true"
       RATE_LIMIT_BACKEND: redis
       SECURITY_HEADERS_ENABLED: "true"
-    ports:
-      - "8000:8000"
+      # Auth/demo gates (safe by default). ALLOW_DEV_AUTH must be explicit.
+      ALLOW_DEV_AUTH: ${ALLOW_DEV_AUTH:-false}
+      DEMO_MODE: ${DEMO_MODE:-false}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
+    ports: []
     restart: always
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+        reservations:
+          memory: 256m
 
   worker:
     restart: always
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 1g
 
   frontend:
+    # Fronted by Caddy; no public port.
+    ports: []
+    restart: always
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: runner_caddy
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_started
     ports:
       - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN to your public hostname, e.g. demo.example.com}
+      TLS_EMAIL: ${TLS_EMAIL:-}
+      BACKEND_UPSTREAM: ${BACKEND_UPSTREAM:-backend:8000}
+      FRONTEND_UPSTREAM: ${FRONTEND_UPSTREAM:-frontend:80}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/auth.conf:/etc/caddy/auth.conf:ro
+      - runner_caddy_data:/data       # ACME certificates (persist across restarts)
+      - runner_caddy_config:/config
     restart: always
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+volumes:
+  runner_caddy_data:
+  runner_caddy_config:

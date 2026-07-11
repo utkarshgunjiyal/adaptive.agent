@@ -154,6 +154,42 @@ class Settings(BaseSettings):
     # enabled in production; a guard for local debugging only.
     log_sensitive: bool = False
 
+    # ----------------------------------------------------------------------- #
+    # Deployment & demo gates (Phase 42B). All additive, safe/off by default,
+    # so the default test suite and dev workflow stay byte-identical.
+    # ----------------------------------------------------------------------- #
+
+    # Demo mode. OFF by default and never on in production. When true, the
+    # composition root wires a DemoEvaluator (the EXISTING answer-evaluator seam)
+    # so marked demo prompts deterministically reach a genuine HITL pause
+    # (WAITING_FOR_APPROVAL / WAITING_FOR_USER) that flows through the real
+    # orchestrator → checkpoint → /agent/resume. It never bypasses the runtime
+    # state machine and never fabricates events.
+    demo_mode: bool = False
+
+    # Production auth gate (Phase 42B). The API ships a development auth stub that
+    # authenticates everyone as ``dev_user``. In production the app refuses to
+    # start while that stub is active UNLESS this is explicitly set true (e.g. a
+    # private demo behind reverse-proxy basic auth). Real multi-user deployments
+    # replace the stub and leave this false. See docs/SECURITY.md.
+    allow_dev_auth: bool = False
+
+    # Cookie policy expectation for production (documentation/enforcement hook for
+    # real auth). The dev stub sets no cookies; a real ``get_current_user`` should
+    # honor these. Kept here so env validation can assert a secure posture.
+    cookie_secure: bool = False
+    cookie_samesite: str = "lax"  # lax | strict | none
+
+    @field_validator("cookie_samesite")
+    @classmethod
+    def _validate_cookie_samesite(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        if normalized not in {"lax", "strict", "none"}:
+            raise ValueError(
+                f"cookie_samesite must be 'lax', 'strict' or 'none', got {value!r}"
+            )
+        return normalized
+
     @field_validator("metrics_backend")
     @classmethod
     def _validate_metrics_backend(cls, value: str) -> str:

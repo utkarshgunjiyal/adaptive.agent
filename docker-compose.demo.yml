@@ -1,0 +1,24 @@
+# Private demo override (Phase 42B). Layer on top of base + prod:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+#                  -f docker-compose.demo.yml up -d --build
+#
+# Purpose: an interview-ready private demo that is fully deterministic (no paid
+# provider) and shows a genuine HITL pause/resume. It runs the development auth
+# stub, so it MUST be kept private — lock it behind Caddy basic_auth (see
+# deploy/auth.conf) and/or a firewall. NEVER use this override for a public,
+# multi-user deployment.
+#
+# What it changes vs. prod:
+# - ENVIRONMENT=demo            (not "production" → startup guard permits the stub)
+# - DEMO_MODE=true             (marked prompts pause for approval/clarification)
+# - AGENT_USE_REAL_LLM=false   (deterministic stub answers — no API key needed)
+# - metrics off at the edge already (Caddy 404s /metrics)
+
+services:
+  backend:
+    environment:
+      ENVIRONMENT: demo
+      DEMO_MODE: "true"
+      AGENT_USE_REAL_LLM: "false"
+      # A real key is not required in demo mode; the deterministic provider answers.

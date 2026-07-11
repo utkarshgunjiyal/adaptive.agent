@@ -1,0 +1,68 @@
+# Manual, opt-in remote deploy (Phase 42B). NEVER runs automatically — it is
+# workflow_dispatch only and gated on a GitHub Environment so a human approves
+# each run. It SSHes to the VM and runs the repo's own deploy scripts; it does
+# not build or push images from CI. Fails safely (with a clear message) when the
+# required secrets are not configured, so a fork/misconfig cannot deploy.
+#
+# Required (configure under Settings → Environments → "production"):
+#   secrets: DEPLOY_SSH_HOST, DEPLOY_SSH_USER, DEPLOY_SSH_KEY
+#   vars:    DEPLOY_PATH (checkout path on the VM), DEPLOY_PROFILE (prod|demo)
+#
+# Credentials are never echoed. The SSH key is written to a file with 600 perms
+# and removed on exit.
+name: Deploy (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to deploy (branch/tag/sha)"
+        required: true
+        default: "main"
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Remote deploy over SSH
+    runs-on: ubuntu-latest
+    environment: production   # requires the environment (and its reviewers) to exist
+    steps:
+      - name: Preflight — required secrets present
+        env:
+          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "$DEPLOY_SSH_HOST" ] || missing="$missing DEPLOY_SSH_HOST"
+          [ -n "$DEPLOY_SSH_USER" ] || missing="$missing DEPLOY_SSH_USER"
+          [ -n "$DEPLOY_SSH_KEY" ]  || missing="$missing DEPLOY_SSH_KEY"
+          [ -n "$DEPLOY_PATH" ]     || missing="$missing DEPLOY_PATH(var)"
+          if [ -n "$missing" ]; then
+            echo "::error::Deploy secrets/vars not configured:$missing. Refusing to deploy."
+            exit 1
+          fi
+          echo "Preflight OK (values not printed)."
+
+      - name: Deploy
+        env:
+          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          DEPLOY_PROFILE: ${{ vars.DEPLOY_PROFILE }}
+          DEPLOY_REF: ${{ github.event.inputs.ref }}
+        run: |
+          set -euo pipefail
+          key="$(mktemp)"; trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$key"; chmod 600 "$key"
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$DEPLOY_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh -i "$key" -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST" \
+            "cd '$DEPLOY_PATH' && DEPLOY_BRANCH='$DEPLOY_REF' PROFILE='${DEPLOY_PROFILE:-prod}' ./scripts/update.sh"

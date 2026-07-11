@@ -75,8 +75,8 @@ config-free and unit-testable without a database or credentials.
 | Field | Value |
 |---|---|
 | **Branch** | `v2-autonomous-platform` |
-| **Latest commit** | `V2 Phase 42A: Production Hardening, CI/CD, Observability & Deployment` |
-| **Test count** | **682 backend** (`600` `tests/agent`, `50` `tests/api`, `32` `tests/ops`) + **30 frontend** (Vitest) |
+| **Latest commit** | `V2 Phase 42B: Deployment, Demo, and Interview Readiness` |
+| **Test count** | **711 backend** (`608` `tests/agent`, `50` `tests/api`, `32` `tests/ops`, `21` `tests/deploy`) + **30 frontend** (Vitest) |
 | **Python** | 3.11 (developed on 3.11.15) |
 | **Test command** | `cd backend && python -m pytest` |
 
@@ -424,6 +424,38 @@ untouched). Additive, opt-in, safe-by-default:
   OPERATIONS,SECURITY,RUNBOOK}.md`. **Decision:** all ops features default off/safe
   so the default suite and dev workflow are byte-identical; the dev auth stub must
   be replaced before public deploy (documented, not redesigned here).
+
+### Phase 42B — Deployment, Demo, and Interview Readiness
+Shipping & presentation only — **no new agent architecture**. All additive,
+safe/off by default; the default suite and dev workflow stay byte-identical.
+- **Single-VM topology**: `deploy/Caddyfile` (Caddy = only public service, auto
+  HTTPS, SSE-safe `flush_interval -1`, `/metrics` → 404, optional `auth.conf`
+  basic auth); refined `docker-compose.prod.yml` (Caddy service, infra + app ports
+  internal, resource limits, JSON log rotation) + `docker-compose.demo.yml`
+  (deterministic private demo).
+- **Production auth gate** (smallest safe = Option A + C): `app/deploy/startup_guard.py`
+  makes the backend **refuse to boot** in production while the dev auth stub is
+  active unless `ALLOW_DEV_AUTH=true`; a private demo runs `ENVIRONMENT=demo`
+  behind Caddy basic auth. New settings: `allow_dev_auth`, `cookie_secure`,
+  `cookie_samesite`, `demo_mode`.
+- **Demo mode** (`app/agent/demo/`): a `DemoEvaluator` on the **existing**
+  answer-evaluator seam (`build_default_runtime(answer_evaluator=...)`), wired only
+  when `DEMO_MODE=true`, so marked prompts reach a genuine `WAITING_FOR_APPROVAL`/
+  `WAITING_FOR_USER` pause through the real checkpoint/resume path. Off by default,
+  refused in production.
+- **Env validation** (`app/deploy/env_check.py`, CLI `python -m app.deploy.env_check`):
+  rejects placeholder/default secrets, `CORS_ORIGINS=*`, domain/CORS mismatch, demo
+  in prod, missing LLM key; never prints secret values.
+- **Scripts** (`scripts/`, `set -euo pipefail`, non-destructive, no secret echo):
+  bootstrap-vm, validate-env, deploy, update, rollback, status, logs, stop,
+  smoke-test, backup, restore.
+- **CI**: shellcheck job, prod+demo compose validate, Caddy config validate, plus a
+  guarded manual `workflow_dispatch` deploy (never auto-deploys).
+- **Docs**: `docs/{DEMO,ARCHITECTURE_WALKTHROUGH,INTERVIEW_GUIDE,PROJECT_POSITIONING,
+  VIDEO_SCRIPT,BACKUP_RESTORE}.md`, `deploy/README.md`; expanded RUNBOOK/DEPLOYMENT/
+  SECURITY. **Decision:** the locked runtime is untouched; the only runtime-adjacent
+  change is the `answer_evaluator` pass-through (composition), which defaults to the
+  prior behavior (no evaluator → byte-identical).
 
 ---
 
@@ -858,7 +890,7 @@ reason — most of the codebase relies on them.
 | **Phase 41A ✅** | **Production MCP Transport & Capability Lifecycle** | *Done.* Real JSON-RPC transports (`StdioTransport`, `StreamableHTTPTransport`, no SDK) behind an `MCPTransport` abstraction; `MCPConnectionManager` (pool/lazy/reuse/reconnect/idle/shutdown/health); `TransportMCPClient` swap-in for `FakeMCPClient`; transport error taxonomy → `AdapterResult`; composition root owns the connection lifecycle (feature-flagged, default off). Runtime/planner/retrieval/execution unchanged. |
 | **Phase 41B ✅** | **Frontend + Human-in-the-Loop** | *Done.* React + TS + Vite SPA: streaming answer, safe runtime timeline, HITL (clarification/approval/rejection/deferred) with checkpoint resume, cookie auth, 30 Vitest tests. One additive backend change: streamed `WAITING_*` runs now carry a resumable `checkpoint_id`. |
 | **Phase 42A ✅** | **Production Hardening, CI/CD, Observability & Deployment** | *Done.* Metrics abstraction + `/metrics`, correlation ids, `/health/{live,ready}`, SSE heartbeat + disconnect cancellation, rate limiting (Redis + fallback), security headers, hardened Docker + frontend image + `docker-compose.prod.yml`, GitHub Actions CI, ESLint 9 migration, docs. Opt-in/safe-by-default; runtime unchanged. |
-| **Phase 42B** | **Deployment, Demo & Interview Readiness** | Pick a deploy target and ship it; seed data + a scripted demo flow; load/soak testing; the deferred MCP items (server→client SSE, per-capability permission policy); real auth wiring; and a polished interview walkthrough. |
+| **Phase 42B ✅** | **Deployment, Demo & Interview Readiness** | *Done.* Single-VM topology (Caddy+HTTPS, internal infra, resource limits, log rotation) + demo override; production auth **startup guard** (no silent `dev_user`); off-by-default **demo mode** (genuine checkpoint/resume via the existing evaluator seam); env validation; deploy/update/rollback/backup/restore/smoke scripts; shellcheck + compose + proxy CI + guarded manual deploy; interview/architecture/positioning/video docs. Locked runtime untouched. |
 
 **Phase 41A current limitations (intentional scope boundary).** Real transports
 ship, but no MCP dependency/live server is required: `agent_mcp_enabled` defaults
@@ -884,19 +916,33 @@ compose config` + CI; the local sandbox had no Docker daemon). The dev auth stub
 is unchanged (documented in `docs/SECURITY.md` as a must-replace). Dev-only
 `vite`/`vitest`/`esbuild` advisories are accepted (not in the production static
 build). `datetime.utcnow()` remains in the locked V1.5 services (V2 executor was
-made tz-aware). `next recommended phase` → **Phase 42B — Deployment, Demo &
-Interview Readiness**.
+made tz-aware).
+
+**Phase 42B current limitations (intentional scope boundary).** This ships a
+deploy-ready single-VM composition and a deterministic demo — **not** a running
+public deployment (no live site is claimed). Docker image builds/compose/Caddy
+were validated via `docker compose config` + `caddy validate` + CI (the sandbox
+had no Docker daemon). Authentication is still the **development stub**, now
+*guarded* (production refuses to boot silently as `dev_user`) but not replaced —
+real auth is the first pre-public task. Demo mode uses the deterministic provider
+(stub answers, not real LLM). No full-stack E2E runs in CI (unit/integration +
+compose/proxy validation only). `next recommended phase` → **none until the
+deployment is live/intentionally private, the demo is recorded, the resume is
+updated, and outreach begins.**
 
 ---
 
 ## Test Status
 
-- **Backend:** **650 passing** (1 benign Starlette deprecation warning),
+- **Backend:** **711 passing** (1 benign Starlette deprecation warning),
   `cd backend && python -m pytest`, ~2–3s.
-  - `tests/agent/` — **600** (unit tests for every runtime stage; config-free,
-    fakes + `asyncio.run`).
+  - `tests/agent/` — **608** (unit tests for every runtime stage, incl. the
+    DemoEvaluator; config-free, fakes + `asyncio.run`).
   - `tests/api/` — **50** (FastAPI `TestClient` over the routers with injected
     fakes; no DB/LLM).
+  - `tests/ops/` — **32** (observability, rate limit, middleware, health, SSE).
+  - `tests/deploy/` — **21** (env validation + production startup guard;
+    config-free, no secret values in output).
 - **Frontend:** **30 passing** (Vitest + jsdom, mocked fetch/streams),
   `cd frontend && npm test`. Also `npm run typecheck`, `npm run lint`,
   `npm run build` all green.

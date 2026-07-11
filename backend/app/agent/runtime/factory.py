@@ -119,6 +119,8 @@ def build_default_runtime(
     embedding=None,
     reranker=None,
     final_hybrid_pipeline=None,
+    answer_evaluator=None,
+    max_repair_rounds: int = 1,
     mcp_registry_manager=None,
     capability_sources: list[CapabilitySource] | None = None,
     capability_registry: UnifiedCapabilityRegistry | None = None,
@@ -187,6 +189,8 @@ def build_default_runtime(
         planner_provider=planner,
         capability_retriever=retriever,
         plan_source=plan_source,
+        answer_evaluator=answer_evaluator,
+        max_repair_rounds=max_repair_rounds,
     )
 
 

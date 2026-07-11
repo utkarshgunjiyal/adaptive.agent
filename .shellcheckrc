@@ -1,0 +1,6 @@
+# Runner.ai deploy scripts — shellcheck configuration (Phase 42B).
+# Follow `source` directives across scripts (they resolve at runtime).
+external-sources=true
+# SC1091: sourced file path is computed at runtime ($(dirname ...)) so static
+# analysis can't open it — not a defect.
+disable=SC1091

@@ -1,0 +1,73 @@
+# Runner.ai — production reverse proxy (Phase 42B).
+#
+# Caddy fronts the whole stack on a single VM and terminates HTTPS automatically
+# (ACME). It is the ONLY publicly-exposed service; backend, frontend, and all
+# infrastructure stay on the internal Docker network.
+#
+# Substituted at runtime from the environment (see .env / docker-compose.prod.yml):
+#   {$DOMAIN}            public hostname, e.g. demo.runner.ai
+#   {$TLS_EMAIL}         ACME account email for Let's Encrypt
+#   {$BACKEND_UPSTREAM}  internal backend address (default backend:8000)
+#   {$FRONTEND_UPSTREAM} internal frontend address (default frontend:80)
+#
+# Routing:
+#   /agent/*, /health/*, /chat/*, /documents/*, /jobs/*, /memory/*  -> backend
+#   everything else                                                 -> frontend SPA
+#   /metrics                                                        -> 404 (never public)
+#
+# SSE (POST /agent/run/stream) is streamed with `flush_interval -1` (no response
+# buffering) and no response timeout, so tokens arrive live and long-lived
+# streams stay open. X-Forwarded-* are set by Caddy so the backend's
+# --proxy-headers sees the real scheme/client.
+
+{
+	email {$TLS_EMAIL}
+	# For a purely private demo without a public DNS name, comment the email
+	# line and Caddy will serve its internal self-signed cert instead.
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Hardening headers at the edge (complement the app's Phase 42A headers).
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		-Server
+	}
+
+	# Prometheus metrics must never be reachable from the public edge, even if
+	# METRICS_ENABLED=true on the backend. Answer 404 before any proxying.
+	@metrics path /metrics /metrics/*
+	respond @metrics 404
+
+	# Optional private-demo authentication (Option C). Empty by default; add a
+	# `basic_auth` block in deploy/auth.conf to lock the demo behind a password.
+	import auth.conf
+
+	# Backend API + health + SSE. Buffering OFF for token streaming.
+	@backend path /agent/* /health/* /chat/* /documents/* /jobs/* /memory/*
+	handle @backend {
+		reverse_proxy {$BACKEND_UPSTREAM} {
+			flush_interval -1
+			# Keep upstream connections alive for long SSE reads.
+			transport http {
+				keepalive 120s
+				response_header_timeout 0
+			}
+		}
+	}
+
+	# Frontend single-page app (static assets + client-side routing) for
+	# everything else.
+	handle {
+		reverse_proxy {$FRONTEND_UPSTREAM}
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}
