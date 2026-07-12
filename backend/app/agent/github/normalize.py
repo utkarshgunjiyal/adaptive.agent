@@ -13,13 +13,18 @@ payload.
 from __future__ import annotations
 
 import json
+import re
 
+from app.agent.github.identity import validate_owner
 from app.agent.mcp.models import MCPToolCallResult
 from app.agent.runtime.context import EvidenceItem
 
 _MAX_ITEMS = 30
 _BODY_EXCERPT_CHARS = 280
 _MAX_TEXT = 200
+
+# A GitHub repository name: 1–100 chars of [A-Za-z0-9._-], never "." or "..".
+_REPO_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 
 
 def _clip(value, limit: int = _MAX_TEXT) -> str:
@@ -67,18 +72,59 @@ def _login(raw) -> str:
     return _clip(raw, 80)
 
 
+def validate_repo_name(value) -> str | None:
+    """A validated GitHub repository name, or None if empty/invalid.
+
+    Accepts ``[A-Za-z0-9._-]`` (1–100 chars); rejects ``.``/``..`` and anything
+    with disallowed characters/whitespace — so a malformed value never becomes an
+    invented resource."""
+    if not value:
+        return None
+    v = str(value).strip()
+    if v in (".", "..") or not _REPO_NAME_RE.match(v):
+        return None
+    return v
+
+
+def _split_full_name(full) -> tuple[str | None, str | None]:
+    """Derive (owner, repo) from a trusted ``full_name`` — but ONLY when it is
+    exactly ``owner/repo`` and BOTH segments are valid. Malformed values
+    (``""``, ``"repo"``, ``"/repo"``, ``"owner/"``, ``"owner/repo/extra"``,
+    whitespace-only) yield ``(None, None)`` — never a half-derived or invented pair.
+    """
+    if not isinstance(full, str):
+        return (None, None)
+    parts = full.strip().split("/")
+    if len(parts) != 2:
+        return (None, None)
+    owner = validate_owner(parts[0].strip())
+    repo = validate_repo_name(parts[1].strip())
+    return (owner, repo) if (owner and repo) else (None, None)
+
+
 def normalize_repository(raw: dict) -> dict:
     raw = raw or {}
-    owner = _login(raw.get("owner"))
-    name = _clip(raw.get("name"), 140)
-    full = _clip(raw.get("full_name") or (f"{owner}/{name}" if owner and name else name), 200)
+    # 1. Trusted structured fields, validated (a valid structured field always wins).
+    owner = validate_owner(_login(raw.get("owner")))
+    name = validate_repo_name(raw.get("name"))
+    # 2. Fill a MISSING owner/name from a valid ``full_name`` (both-or-nothing).
+    if owner is None or name is None:
+        fo, fn = _split_full_name(raw.get("full_name"))
+        owner = owner or fo
+        name = name or fn
+    # 3. Canonical full_name = owner/name when both exist; otherwise keep the
+    #    trusted raw full_name (or whichever single field is known). Never invent.
+    if owner and name:
+        full = f"{owner}/{name}"
+    else:
+        full = _clip(raw.get("full_name"), 200) or name or owner or ""
     visibility = raw.get("visibility")
     if not visibility:
         visibility = "private" if raw.get("private") else "public"
     return {
-        "owner": owner,
-        "name": name,
-        "full_name": full,
+        "owner": owner or "",
+        "name": name or "",
+        "full_name": _clip(full, 200),
         "description": _clip(raw.get("description"), 200),
         "visibility": _clip(visibility, 20),
         "default_branch": _clip(raw.get("default_branch"), 100),
