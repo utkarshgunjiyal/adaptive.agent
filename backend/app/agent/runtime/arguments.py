@@ -44,6 +44,10 @@ class ArgumentBuildResult(BaseModel):
     #: Safe, secret-free summary for diagnostics (resource TYPES + provenance
     #: only — never raw values). e.g. {"owner_source": "connector_identity"}.
     resource_summary: dict = Field(default_factory=dict)
+    #: Resources to publish into thread state on a SUCCESSFUL execution (Phase
+    #: 46.3.2). Serialization-safe dicts: {"type","value","source"}. Empty for
+    #: passthrough/non-provider tools. Never published on failure/missing/ambiguous.
+    published_resources: list[dict] = Field(default_factory=list)
 
     @property
     def ok(self) -> bool:

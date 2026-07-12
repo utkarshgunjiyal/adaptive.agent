@@ -75,6 +75,7 @@ class DirectRuntime:
         top_k: int = 5,
         max_retries: int = 1,
         argument_builder=None,
+        execution_observer=None,
     ) -> None:
         self._retriever = retriever
         self._executor = executor
@@ -86,6 +87,12 @@ class DirectRuntime:
         # can signal a missing/ambiguous required resource → clarify, don't execute).
         # ``None`` → the historical ``_build_args`` behavior, byte-identical.
         self._argument_builder = argument_builder
+        # Optional post-success publication seam (Phase 46.3.2): a callable
+        # ``(tool, build_result, adapter_result, run_context)`` invoked ONLY after a
+        # successful execution, so resolved resources can be published into thread
+        # state. ``None`` → no publication (byte-identical). It never affects the
+        # run, tool selection, transport, retries, or routing.
+        self._execution_observer = execution_observer
 
     async def run(self, run_context: RunContext) -> RunContext:
         # 1-2. Read the Behavior Gate decision and require the DIRECT path.
@@ -149,6 +156,7 @@ class DirectRuntime:
         # resource is missing or ambiguous, clarify deterministically instead of
         # executing a wrong/global/guessed call (no MCP call is made).
         args = default_args
+        build = None
         if self._argument_builder is not None:
             build = self._argument_builder(primary, run_context, default_args)
             diagnostics.tool_arguments_built(run_context, primary, build)
@@ -233,6 +241,17 @@ class DirectRuntime:
         # Diagnostics (Phase 46.2.3): what actually executed and its outcome.
         if chosen.kind == ToolKind.MCP:
             diagnostics.mcp_tool_completed(run_context, chosen, result, attempts=attempts)
+
+        # Publish resolved resources into thread state on success (Phase 46.3.2).
+        # Only on a successful result and only when arguments were built — a
+        # failed/missing/ambiguous outcome never publishes. Best-effort: observation
+        # never affects the run, tool selection, transport, retries, or routing.
+        if self._execution_observer is not None and build is not None and result.success:
+            try:
+                published = self._execution_observer(chosen, build, result, run_context)
+                diagnostics.resources_published(run_context, chosen, published)
+            except Exception:  # noqa: BLE001 - publication must never break a run
+                pass
 
         # Classify the terminal outcome.
         if result.success and result.partial:

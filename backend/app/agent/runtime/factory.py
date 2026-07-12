@@ -147,6 +147,7 @@ def build_default_runtime(
     capability_registry: UnifiedCapabilityRegistry | None = None,
     mcp_result_normalizers=None,
     capability_argument_builder=None,
+    capability_execution_observer=None,
 ) -> AgentOrchestrator:
     """Construct and wire the default runtime, returning an AgentOrchestrator.
 
@@ -205,7 +206,9 @@ def build_default_runtime(
         retriever = IntentCapabilityRetriever(retriever)
 
     direct_runtime = DirectRuntime(
-        retriever, executor, top_k=top_k, argument_builder=capability_argument_builder
+        retriever, executor, top_k=top_k,
+        argument_builder=capability_argument_builder,
+        execution_observer=capability_execution_observer,
     )
     planner_runtime = PlannerRuntime(direct_runtime, retriever, top_k=top_k)
 

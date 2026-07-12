@@ -168,6 +168,16 @@ account listing.
   connector identity / cached context / clarification). Explicit `owner/repo` always
   beats inferred context; an owner or repository is **never guessed**. The argument
   builder **consumes the already-resolved resources** and never re-parses them.
+- **Thread resource memory (Phase 46.3.2).** After a **successful** call, the
+  resolved resources (owner/repo/…) are published into a thread-scoped store
+  (`resources/state.py`, keyed by `(user_id, thread_id, provider)`), so a later
+  request in the same thread resolves them automatically — *"Find my runner-ai
+  repository."* then *"List open issues."* fills `owner`/`repo` with **no LLM**.
+  Resolution priority is request → prior output → thread state → connector identity
+  → cached context → clarification; **explicit request resources always override
+  memory**, and memory never fills an explicit repo or an account-wide listing.
+  State is **strictly isolated** by user, thread, and provider — no cross-user or
+  cross-thread leakage — and failed/missing/ambiguous outcomes publish nothing.
 - **Deterministic-first argument building.** `github/arguments.py`
   (`GithubArgumentBuilder`) maps the operation off the discovered tool name and
   fills only fields the discovered `input_schema` declares (tolerating

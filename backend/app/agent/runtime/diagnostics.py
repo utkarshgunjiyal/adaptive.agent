@@ -199,6 +199,18 @@ def resource_resolved(run_context, tool, resolved) -> None:
          ambiguous=dict(getattr(resolved, "ambiguous", {}) or {}))
 
 
+def resources_published(run_context, tool, published_types) -> None:
+    """Safe view of thread-state publication: resource TYPE names + count only —
+    never resolved values (Phase 46.3.2)."""
+    if not published_types:
+        return
+    b = binding_view(tool)
+    types = sorted(str(t) for t in published_types)
+    emit(run_context, "agent.resources_published",
+         capability_id=b["capability_id"], provider=b["provider"] or b["server_id"],
+         published_types=types, published_count=len(types))
+
+
 def _argument_view(tool, result) -> dict:
     """Safe view of an argument-build result: KEY NAMES + provenance only, never
     argument values (Phase 46.2.6)."""

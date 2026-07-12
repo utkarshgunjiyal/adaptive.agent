@@ -121,6 +121,7 @@ async def lifespan(app: FastAPI):
     mcp_registry_manager = None
     mcp_result_normalizers = None
     capability_argument_builder = None
+    capability_execution_observer = None
     # Phase 46.2: the GitHub read-only MCP connector reflects real health here. A
     # GitHub connection failure must NOT block startup — document/chat flows keep
     # working; GitHub simply reports its status truthfully.
@@ -196,7 +197,9 @@ async def lifespan(app: FastAPI):
         from app.agent.resources import (
             ArgumentBuilderRegistry,
             ResourceAwareArgumentBuilder,
+            ResourcePublisher,
             ResourceResolverRegistry,
+            ThreadResourceStore,
         )
 
         get_me_fn = None
@@ -219,7 +222,15 @@ async def lifespan(app: FastAPI):
         resolvers.register(GithubResourceResolver(identity=github_identity))
         builders = ArgumentBuilderRegistry()
         builders.register(GithubArgumentBuilder())
-        capability_argument_builder = ResourceAwareArgumentBuilder(resolvers, builders).build
+        # Thread-scoped resource memory (Phase 46.3.2): a shared in-memory store the
+        # pipeline reads (to fill owner/repo from a prior turn) and the publisher
+        # writes on a successful execution. Strictly scoped to (user, thread,
+        # provider) → no cross-user/thread leakage. Rebuilt per process (ephemeral).
+        resource_store = ThreadResourceStore()
+        capability_argument_builder = ResourceAwareArgumentBuilder(
+            resolvers, builders, store=resource_store
+        ).build
+        capability_execution_observer = ResourcePublisher(resource_store)
         logger.info("app.github_identity_ready", extra={"identity": github_identity.public_view()})
 
     # Agent LLM providers (Phase 37). Composition root selects deterministic vs
@@ -234,6 +245,7 @@ async def lifespan(app: FastAPI):
         connector_eligibility=True,
         capability_executor=capability_executor,
         capability_argument_builder=capability_argument_builder,
+        capability_execution_observer=capability_execution_observer,
     )
     logger.info(
         "app.agent_llm_ready",

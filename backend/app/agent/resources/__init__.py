@@ -25,6 +25,7 @@ from app.agent.resources.resolver import (
     ResourceResolverRegistry,
     provider_of,
 )
+from app.agent.resources.state import ResourcePublisher, ThreadResourceStore
 
 __all__ = [
     "Resource",
@@ -36,5 +37,7 @@ __all__ = [
     "ResourceResolverRegistry",
     "ArgumentBuilderRegistry",
     "ResourceAwareArgumentBuilder",
+    "ThreadResourceStore",
+    "ResourcePublisher",
     "provider_of",
 ]

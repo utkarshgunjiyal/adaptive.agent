@@ -211,9 +211,16 @@ owner is a trusted, deployment-scoped **public login** (best-effort `get_me` →
 validated `GITHUB_MCP_OWNER` setting), never inferred from chat text. `DirectRuntime`
 carries an injected `argument_builder` seam (default off → byte-identical): a missing
 or ambiguous required resource **clarifies and makes no MCP call**, never guessing an
-owner, repository, or number. *Why:* correct tool, correct arguments — schema-valid
-and account-scoped. *Trade-off:* deterministic heuristics (no LLM) for GitHub
-argument shapes; unresolved requests clarify rather than guess.
+owner, repository, or number. Phase 46.3.2 adds **thread resource memory**: after a
+successful call the resolved resources are published into a thread-scoped store
+(`resources/state.py`, keyed by `(user_id, thread_id, provider)`) via a post-success
+`execution_observer` seam, so a later turn resolves them with no LLM (*"Find my
+runner-ai repository."* → *"List open issues."* fills owner/repo). Explicit request
+resources always override memory; state is strictly isolated per user/thread/provider;
+failed/missing/ambiguous outcomes publish nothing. *Why:* correct tool, correct
+arguments — schema-valid, account-scoped, and context-aware across a thread.
+*Trade-off:* deterministic heuristics (no LLM); memory is in-process/ephemeral this
+phase (a persistent store can implement the same tiny surface later).
 
 ### 12c. Runtime selection diagnostics (Phase 46.2.3)
 Safe, structured diagnostic events (`app/agent/runtime/diagnostics.py`) trace a
