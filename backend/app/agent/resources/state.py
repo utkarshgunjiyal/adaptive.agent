@@ -59,14 +59,22 @@ class ThreadResourceStore:
 class ResourcePublisher:
     """Post-success publication seam (the DirectRuntime ``execution_observer``).
 
-    Publishes the resources the resolver produced for a SUCCESSFUL call, tagged as
-    ``PRIOR_OUTPUT`` (they now originate from a prior successful output). Never
-    publishes on failure, and never on a missing/ambiguous build (those never
+    Publishes the resources a SUCCESSFUL call established, tagged ``PRIOR_OUTPUT``.
+    Two trusted sources are merged, with the **normalized output authoritative**:
+
+    - the resources RESOLVED for the call (from ``build.published_resources``), and
+    - resources EXTRACTED from the trusted normalized output by a per-provider
+      ``ProviderResourceExtractor`` (Phase 46.3.2.1) — e.g. the active repository's
+      owner+repo from ``search_repositories`` output, which the resolver could not
+      know pre-execution when the connector identity is unknown.
+
+    Never publishes on failure, and never on a missing/ambiguous build (those never
     execute). Best-effort: a publication error can never affect a run.
     """
 
-    def __init__(self, store: ThreadResourceStore) -> None:
+    def __init__(self, store: ThreadResourceStore, *, extractors=None) -> None:
         self._store = store
+        self._extractors = extractors
 
     def __call__(self, tool, build, result, run_context) -> list[str]:
         if not getattr(result, "success", False):
@@ -74,17 +82,29 @@ class ResourcePublisher:
         from app.agent.resources.resolver import provider_of
 
         provider = provider_of(tool)
-        published = list(getattr(build, "published_resources", None) or [])
-        if not provider or not published:
+        if not provider:
             return []
-        resources = [
-            Resource(type=str(r["type"]), value=r["value"],
-                     source=ResourceSource.PRIOR_OUTPUT, provider=provider)
-            for r in published
-            if isinstance(r, dict) and "type" in r and "value" in r
-        ]
+
+        # Base: resources resolved for the call (pre-execution).
+        merged: dict[str, Resource] = {}
+        for r in getattr(build, "published_resources", None) or []:
+            if isinstance(r, dict) and "type" in r and "value" in r:
+                merged[str(r["type"])] = Resource(
+                    type=str(r["type"]), value=r["value"],
+                    source=ResourceSource.PRIOR_OUTPUT, provider=provider)
+
+        # Trusted output overrides/augments (authoritative for the active resource).
+        extractor = self._extractors.for_provider(provider) if self._extractors else None
+        if extractor is not None:
+            resolved_values = {t: res.value for t, res in merged.items()}
+            output = getattr(result, "output", None) or {}
+            for r in extractor.extract(tool, resolved_values, output) or []:
+                merged[r.type] = r
+
+        if not merged:
+            return []
         return self._store.publish(
             getattr(run_context, "user_id", None),
             getattr(run_context, "thread_id", None),
-            provider, resources,
+            provider, list(merged.values()),
         )

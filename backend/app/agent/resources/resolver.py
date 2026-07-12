@@ -53,6 +53,22 @@ class ProviderArgumentBuilder(Protocol):
         ...
 
 
+@runtime_checkable
+class ProviderResourceExtractor(Protocol):
+    """Extracts publishable resources from a SUCCESSFUL tool's trusted output.
+
+    Post-execution counterpart to ``ResourceResolver``: given the tool, the
+    resources resolved for the call, and the normalized (trusted, secret-free)
+    output, return the resources to remember. It must never guess — e.g. a broad
+    multi-result listing returns nothing rather than picking one arbitrarily.
+    """
+
+    provider: str
+
+    def extract(self, tool: ToolSpec, resolved: dict, output: dict):  # -> list[Resource]
+        ...
+
+
 class ResourceResolverRegistry:
     """Provider id → ``ResourceResolver``."""
 
@@ -79,6 +95,22 @@ class ArgumentBuilderRegistry:
         self._by_provider[builder.provider] = builder
 
     def for_provider(self, provider: str | None) -> ProviderArgumentBuilder | None:
+        return self._by_provider.get(provider) if provider else None
+
+    def providers(self) -> list[str]:
+        return sorted(self._by_provider)
+
+
+class ResourceExtractorRegistry:
+    """Provider id → ``ProviderResourceExtractor``."""
+
+    def __init__(self) -> None:
+        self._by_provider: dict[str, ProviderResourceExtractor] = {}
+
+    def register(self, extractor: ProviderResourceExtractor) -> None:
+        self._by_provider[extractor.provider] = extractor
+
+    def for_provider(self, provider: str | None) -> ProviderResourceExtractor | None:
         return self._by_provider.get(provider) if provider else None
 
     def providers(self) -> list[str]:

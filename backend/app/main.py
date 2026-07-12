@@ -191,12 +191,14 @@ async def lifespan(app: FastAPI):
         from app.agent.github import (
             GITHUB_MCP_SERVER_ID,
             GithubArgumentBuilder,
+            GithubResourceExtractor,
             GithubResourceResolver,
             resolve_github_identity,
         )
         from app.agent.resources import (
             ArgumentBuilderRegistry,
             ResourceAwareArgumentBuilder,
+            ResourceExtractorRegistry,
             ResourcePublisher,
             ResourceResolverRegistry,
             ThreadResourceStore,
@@ -227,10 +229,15 @@ async def lifespan(app: FastAPI):
         # writes on a successful execution. Strictly scoped to (user, thread,
         # provider) → no cross-user/thread leakage. Rebuilt per process (ephemeral).
         resource_store = ThreadResourceStore()
+        # Post-success extractors (Phase 46.3.2.1): derive a complete active-repo
+        # identity (owner+repo) from the trusted normalized output, so a successful
+        # lookup publishes owner even when the connector identity was unknown.
+        extractors = ResourceExtractorRegistry()
+        extractors.register(GithubResourceExtractor())
         capability_argument_builder = ResourceAwareArgumentBuilder(
             resolvers, builders, store=resource_store
         ).build
-        capability_execution_observer = ResourcePublisher(resource_store)
+        capability_execution_observer = ResourcePublisher(resource_store, extractors=extractors)
         logger.info("app.github_identity_ready", extra={"identity": github_identity.public_view()})
 
     # Agent LLM providers (Phase 37). Composition root selects deterministic vs

@@ -168,11 +168,21 @@ account listing.
   connector identity / cached context / clarification). Explicit `owner/repo` always
   beats inferred context; an owner or repository is **never guessed**. The argument
   builder **consumes the already-resolved resources** and never re-parses them.
-- **Thread resource memory (Phase 46.3.2).** After a **successful** call, the
-  resolved resources (owner/repo/…) are published into a thread-scoped store
+- **Thread resource memory (Phase 46.3.2 / 46.3.2.1).** After a **successful** call
+  the established resources (owner/repo/…) are published into a thread-scoped store
   (`resources/state.py`, keyed by `(user_id, thread_id, provider)`), so a later
   request in the same thread resolves them automatically — *"Find my runner-ai
   repository."* then *"List open issues."* fills `owner`/`repo` with **no LLM**.
+  Publication merges two trusted sources with the **normalized output
+  authoritative**: the resources resolved for the call, plus a per-provider
+  post-success extractor (`GithubResourceExtractor`) that reads the trusted
+  `search_repositories` output to publish a **complete** active-repository identity
+  (`owner`+`repo`) — so the owner is remembered even when the connector identity was
+  unknown pre-execution. A lookup returning exactly one repository (or the
+  explicitly-requested name confirmed among results) publishes that owner/repo; a
+  **broad multi-repo listing publishes no active repository** (never guesses one).
+  Owner is only ever derived from trusted output or the resolved identity, never
+  from conversation text.
   Resolution priority is request → prior output → thread state → connector identity
   → cached context → clarification; **explicit request resources always override
   memory**, and memory never fills an explicit repo or an account-wide listing.

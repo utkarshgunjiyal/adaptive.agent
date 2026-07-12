@@ -15,9 +15,11 @@ from app.agent.github.identity import GithubIdentity
 from app.agent.github.resolver import GithubResourceResolver
 from app.agent.mcp.models import MCPServerConfig, MCPToolDefinition, MCPTransport
 from app.agent.mcp.registry import convert_tool_definition
+from app.agent.github.publication import GithubResourceExtractor
 from app.agent.resources import (
     ArgumentBuilderRegistry,
     ResourceAwareArgumentBuilder,
+    ResourceExtractorRegistry,
     ResourcePublisher,
     ResourceResolverRegistry,
     ThreadResourceStore,
@@ -81,6 +83,31 @@ def _harness(identity=IDENT, store=None):
     pipeline = ResourceAwareArgumentBuilder(resolvers, builders, store=store)
     publisher = ResourcePublisher(store)
     return store, pipeline, publisher
+
+
+def _harness_x(identity=None):
+    """Harness WITH the GitHub output extractor (Phase 46.3.2.1). Default identity
+    is UNKNOWN — the live case where owner must come from the trusted output."""
+    store = ThreadResourceStore()
+    resolvers = ResourceResolverRegistry()
+    resolvers.register(GithubResourceResolver(identity=identity or GithubIdentity()))
+    builders = ArgumentBuilderRegistry()
+    builders.register(GithubArgumentBuilder())
+    extractors = ResourceExtractorRegistry()
+    extractors.register(GithubResourceExtractor())
+    pipeline = ResourceAwareArgumentBuilder(resolvers, builders, store=store)
+    publisher = ResourcePublisher(store, extractors=extractors)
+    return store, pipeline, publisher
+
+
+def _repos_output(*owner_name_pairs):
+    """A normalized search_repositories output (trusted, secret-free)."""
+    return {"provider": "github", "kind": "repositories", "repositories": [
+        {"owner": o, "name": n, "full_name": f"{o}/{n}"} for o, n in owner_name_pairs]}
+
+
+def _ok(output):
+    return AdapterResult.ok(output=output)
 
 
 def _ctx(text, *, user="u1", thread="t1"):
@@ -223,3 +250,63 @@ def test_publication_diagnostics_have_types_not_values():
     assert set(published["published_types"]) == {"owner", "repo"}
     # provenance/type names only — resolved VALUES never appear in the event.
     assert "runner-ai" not in str(published) and "octocat" not in str(published)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 46.3.2.1 — complete repository identity from trusted output
+# --------------------------------------------------------------------------- #
+
+def test_single_repo_lookup_publishes_owner_and_repo_from_output():
+    # THE live defect: identity UNKNOWN, so owner is not resolvable pre-execution —
+    # it must be published from the successful, trusted normalized output.
+    store, pipeline, publisher = _harness_x()  # unknown identity
+    out = _repos_output(("utkarshgunjiyal", "runner-ai"))
+    _turn(pipeline, publisher, spec("search_repositories"),
+          "Find my runner-ai repository.", result=_ok(out))
+    assert store.remembered("u1", "t1", "github") == {
+        "owner": "utkarshgunjiyal", "repo": "runner-ai"}
+
+
+def test_next_turn_list_issues_resolves_owner_and_repo_from_prior_output():
+    store, pipeline, publisher = _harness_x()  # unknown identity
+    _turn(pipeline, publisher, spec("search_repositories"),
+          "Find my runner-ai repository.", result=_ok(_repos_output(("utkarshgunjiyal", "runner-ai"))))
+    rc, executor = _turn(pipeline, publisher, spec("list_issues"), "List open issues.")
+    _, args = executor.calls[-1]
+    assert args == {"owner": "utkarshgunjiyal", "repo": "runner-ai", "state": "open"}
+    assert rc.metadata["execution_status"] == ExecutionStatus.SUCCESS.value
+
+
+def test_multi_repo_listing_publishes_no_active_repo():
+    store, pipeline, publisher = _harness_x(identity=IDENT)
+    out = _repos_output(("a", "one"), ("b", "two"), ("octocat", "three"))
+    _turn(pipeline, publisher, spec("search_repositories"),
+          "List all my GitHub repositories.", result=_ok(out))
+    remembered = store.remembered("u1", "t1", "github")
+    assert "repo" not in remembered  # never pick a random active repository
+
+
+def test_explicit_name_confirmed_among_many_publishes_that_pair():
+    store, pipeline, publisher = _harness_x()  # unknown identity
+    out = _repos_output(("x", "alpha"), ("utkarshgunjiyal", "runner-ai"), ("y", "beta"))
+    _turn(pipeline, publisher, spec("search_repositories"),
+          "Find my runner-ai repository.", result=_ok(out))
+    assert store.remembered("u1", "t1", "github") == {
+        "owner": "utkarshgunjiyal", "repo": "runner-ai"}
+
+
+def test_failed_repo_lookup_with_output_publishes_nothing():
+    store, pipeline, publisher = _harness_x()
+    failure = AdapterResult.failure(ErrorCode.UPSTREAM_ERROR, retryable=False)
+    _turn(pipeline, publisher, spec("search_repositories"),
+          "Find my runner-ai repository.", result=failure)
+    assert store.remembered("u1", "t1", "github") == {}
+
+
+def test_output_publication_diagnostics_have_no_values():
+    store, pipeline, publisher = _harness_x()
+    rc, _ = _turn(pipeline, publisher, spec("search_repositories"),
+                  "Find my runner-ai repository.", result=_ok(_repos_output(("utkarshgunjiyal", "runner-ai"))))
+    published = {e["event"]: e for e in rc.metadata.get("diagnostics", [])}["agent.resources_published"]
+    assert set(published["published_types"]) == {"owner", "repo"}
+    assert "utkarshgunjiyal" not in str(published) and "runner-ai" not in str(published)
