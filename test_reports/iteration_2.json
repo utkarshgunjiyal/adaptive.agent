@@ -1,0 +1,45 @@
+{
+  "summary": "Runner.ai V2 (Phase 5-6) — end-to-end pass. Backend: 11/11 pytest cases in backend_test_v2.py PASS (~87s). Verified: /api/tools now exposes 7 tools with save_user_preference risk_level=write + requires_approval=true; full approval workflow (waiting_approval SSE frame -> /approve produces completed run with save_user_preference tool_call ok + assistant message w/ [1] citation persisted; /reject persists a rejection assistant message and marks run failed); multi-file /api/documents/upload_bulk accepts 2 PDFs + rejects 1 non-PDF with reasons; hybrid retrieval doc-scoped run returns private_doc citations w/ filename+page; digest schedules CRUD (POST 201, GET, DELETE 204) + GET /api/digests returns array; share thread lifecycle (enable→public GET returns thread+messages→disable 204→public GET 404, cross-user disable is 404); structured JSON planner persists AgentPlan with goal + steps having tool_id; proxy-aware rate limiter — sending 25 rapid /auth/login attempts with X-Forwarded-For=1.2.3.4 saw 429; a fresh XFF (9.9.9.9) still returned 401 (per-IP keying works). Frontend E2E via Playwright: register → send 'Please save my preferred topic as agentic-RAG' → amber APPROVAL REQUIRED card renders with save_user_preference step + JSON args + Approve/Reject; clicking Approve makes card disappear and assistant message ('Your preferred topic is saved as **agentic-RAG**. [1]') w/ citation pill + Preference-saved source appears; Digests tab (tab-digests) shows topic input + cadence select + Schedule button; creating a weekly schedule adds it to digest-schedules-list and delete removes it; Share button opens share-modal with URL https://.../share/<token>, opening that URL in a fresh browser context (no auth) renders SharedThreadPage with title + 2 messages; clicking Revoke closes modal + backend disables sharing and public URL now shows 'UNAVAILABLE This link is no longer active'; multi-file upload input has `multiple`, selecting 2 PDFs uploads both and both reach READY within 6s.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Share modal - Copy button", "issues": ["Clicking share-modal-copy in headless browser produces 'Copy failed' toast because the browser Clipboard API requires document.hasFocus / user gesture / secure-context clipboard permission. In a real logged-in user's browser this works fine, but a fallback (e.g. document.execCommand('copy') on a hidden textarea or window.getSelection based copy) would make it more robust and testable. Not a blocker."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test_v2.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results_v2.xml"
+  ],
+  "action_items": [
+    "(Optional) Harden share-modal-copy to fall back to execCommand('copy') when navigator.clipboard.writeText rejects — currently shows a red 'Copy failed' toast in some browsers/headless environments."
+  ],
+  "critical_code_review_comments": [
+    "backend/app/routes/agent.py — the /approve endpoint runs execute_plan + synthesize synchronously inside a request handler (~5-15s for gpt-5.2). This blocks the FastAPI worker and there's no timeout guard; a slow LLM or Tavily call could hold the connection indefinitely. Consider dispatching the work with a task + polling, OR adding a hard asyncio.wait_for around _run_after_approval.",
+    "backend/app/routes/share.py — public /api/share/{token} does not rate-limit or cache. A leaked token can be scraped freely; consider check_rate_limit keyed by client_ip and/or a token-usage counter for abuse mitigation.",
+    "backend/app/routes/agent.py — approve/reject responses to a mongo-persisted plan use AgentPlan(**plan_dict); if the persisted schema drifts (e.g. new required field added in a future release), the approve endpoint 500s with a generic 'Stored plan is unreadable'. Consider a lenient loader (ignore unknown fields, fill defaults) to avoid poisoning waiting runs across deploys.",
+    "backend/app/routes/documents.py — /documents/upload_bulk caps at 10 files but reads ALL of them into memory before validation. For a 25MB * 10 upload burst that's 250MB of RAM per request. Consider streaming validation (chunk-check the magic bytes) or aborting after the first 3-4 accepted.",
+    "backend/app/auth.py — client_ip() blindly trusts the first entry in X-Forwarded-For. This is fine behind a k8s ingress that overwrites the header, but if the API is ever exposed directly, a client can spoof any IP and defeat the rate limiter. Consider a settings.trusted_proxies list.",
+    "backend/app/services/digest.py + APScheduler in-process — schedules do not survive worker restarts unless persisted at import time; verify list_schedules always reflects DB, and the scheduler picks up newly-created rows on the next tick (not just at startup). If a user creates a schedule mid-session, will APScheduler actually fire it? Please confirm.",
+    "frontend/src/components/ChatArea.js — approval card is keyed off the SSE waiting_approval frame stored in local state; if the user reloads the page mid-approval the card is lost. Consider hydrating from GET /api/agent/runs/{id} on mount when the thread has an in-flight run with status='waiting_approval'.",
+    "frontend/src/pages/SharedThreadPage.js — good that revoked links show 'UNAVAILABLE'. Consider adding a canonical shared-cta-register button + meta OpenGraph tags for shareable link previews."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test_v2.py (NEW — 11 tests covering all V2 features)"
+  ],
+  "success_rate": {
+    "backend": "100% (11/11 pytest V2, prior 21/21 V1 unchanged)",
+    "frontend": "100% (all E2E V2 flows: approve, reject implicitly-covered-in-backend, digests CRUD, share modal + shared page + revoke, multi-file upload)"
+  },
+  "test_credentials": "Backend tests generate ephemeral test_userA_v2_*@example.com and test_userB_v2_*@example.com (password TestPass123!). Frontend uses uitest_*@example.com and uitest2_*@example.com. Demo user demo@runner.ai / demo1234 NOT relied on.",
+  "seed_data_creation": "None persistent. Ephemeral: several test users, ~4 small reportlab-generated PDFs, several throwaway threads, one weekly digest schedule (created + deleted in same test).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Regressions run with: `python -m pytest /app/backend/tests/backend_test.py /app/backend/tests/backend_test_v2.py -v --junitxml=/app/test_reports/pytest/pytest_all.xml`. Full V1+V2 suite is ~4-5 minutes because it hits gpt-5.2, Tavily, and arXiv live. V2 approval workflow runs against the real gpt-5.2 planner — occasional flakiness possible if the planner produces a plan with 0 approval steps for the 'save my preferred topic' prompt; if the test test_waiting_approval_sse_emitted ever fails, verify /api/tools shows save_user_preference with requires_approval=true first. Rate-limit test may skip if XFF handling changes; check /app/backend/app/auth.py:client_ip. The `.png + quality=40` playwright screenshot combo is unsupported — png doesn't accept quality param.",
+  "rca of the issue": "N/A — no bugs found in V2 features. Iteration 1 flagged that the rate limiter was not proxy-aware; V2 has fixed that (auth.py now honours X-Forwarded-For then X-Real-IP), and this test now observes 429 responses reliably against a fixed XFF."
+}

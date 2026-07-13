@@ -16,6 +16,28 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.config import settings
 from app.db import get_db
 
+
+def client_ip(request: Request) -> str:
+    """Return the request's real client IP, respecting common proxy headers.
+
+    When Runner.ai runs behind an ingress / Cloudflare / nginx, the socket
+    peer address is the proxy, not the real client. We honour (in order):
+      1. X-Forwarded-For (first entry)
+      2. X-Real-IP
+      3. request.client.host
+    """
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        first = xff.split(",")[0].strip()
+        if first:
+            return first
+    real = request.headers.get("x-real-ip")
+    if real:
+        return real.strip()
+    if request.client:
+        return request.client.host
+    return "unknown"
+
 # ---- bcrypt --------------------------------------------------------------
 
 def hash_password(password: str) -> str:

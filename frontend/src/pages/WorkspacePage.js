@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { LogOut, MessageSquarePlus, ChevronRight, Terminal } from 'lucide-react';
+import { LogOut, MessageSquarePlus, ChevronRight, Terminal, Share2 } from 'lucide-react';
 import { useAuth } from '../AuthContext';
 import { createThread, listDocuments, listMessages, listThreads } from '../api';
 import ThreadSidebar from '../components/ThreadSidebar';
 import DocumentPanel from '../components/DocumentPanel';
 import ChatArea from '../components/ChatArea';
 import ExecutionDrawer from '../components/ExecutionDrawer';
+import DigestPanel from '../components/DigestPanel';
+import ShareModal from '../components/ShareModal';
 
 export default function WorkspacePage() {
   const { user, logout } = useAuth();
@@ -24,7 +26,8 @@ export default function WorkspacePage() {
   const [selectedDocIds, setSelectedDocIds] = useState([]);
   const [documents, setDocuments] = useState([]);
   const [runInFlight, setRunInFlight] = useState(false);
-  const [leftPanel, setLeftPanel] = useState('threads'); // 'threads' | 'docs'
+  const [leftPanel, setLeftPanel] = useState('threads'); // 'threads' | 'docs' | 'digests'
+  const [shareOpen, setShareOpen] = useState(false);
 
   const refreshThreads = useCallback(async () => {
     try {
@@ -147,23 +150,34 @@ export default function WorkspacePage() {
           >
             Documents
           </TabButton>
+          <TabButton
+            active={leftPanel === 'digests'}
+            onClick={() => setLeftPanel('digests')}
+            testid="tab-digests"
+          >
+            Digests
+          </TabButton>
         </div>
 
         <div className="flex-1 overflow-y-auto min-h-0">
-          {leftPanel === 'threads' ? (
+          {leftPanel === 'threads' && (
             <ThreadSidebar
               threads={threads}
               loading={threadsLoading}
               activeThreadId={threadId}
               onSelect={(id) => navigate(`/app/${id}`)}
             />
-          ) : (
+          )}
+          {leftPanel === 'docs' && (
             <DocumentPanel
               documents={documents}
               onDocumentsChange={setDocuments}
               selectedIds={selectedDocIds}
               onSelectedChange={setSelectedDocIds}
             />
+          )}
+          {leftPanel === 'digests' && (
+            <DigestPanel onOpenThread={(id) => navigate(`/app/${id}`)} />
           )}
         </div>
 
@@ -198,17 +212,32 @@ export default function WorkspacePage() {
               {activeThread?.title || (threadId ? 'Loading…' : 'Start a new conversation')}
             </h1>
           </div>
-          <button
-            onClick={() => setDrawerOpen((v) => !v)}
-            className={`inline-flex items-center gap-2 px-3 py-2 border transition-colors ${drawerOpen ? 'border-night-text text-night-text' : 'border-night-border text-night-textMuted hover:text-night-text'}`}
-            data-testid="toggle-execution-drawer"
-          >
-            <Terminal className="w-4 h-4" />
-            <span className="mono text-[11px] uppercase tracking-widest">
-              execution
-            </span>
-            <ChevronRight className={`w-3 h-3 transition-transform ${drawerOpen ? 'rotate-180' : ''}`} />
-          </button>
+          <div className="flex items-center gap-2">
+            {threadId && (
+              <button
+                onClick={() => setShareOpen(true)}
+                className="inline-flex items-center gap-2 px-3 py-2 border border-night-border text-night-textMuted hover:text-night-text hover:border-night-text transition-colors"
+                data-testid="share-thread-button"
+                title="Share this thread"
+              >
+                <Share2 className="w-4 h-4" />
+                <span className="mono text-[11px] uppercase tracking-widest">
+                  share
+                </span>
+              </button>
+            )}
+            <button
+              onClick={() => setDrawerOpen((v) => !v)}
+              className={`inline-flex items-center gap-2 px-3 py-2 border transition-colors ${drawerOpen ? 'border-night-text text-night-text' : 'border-night-border text-night-textMuted hover:text-night-text'}`}
+              data-testid="toggle-execution-drawer"
+            >
+              <Terminal className="w-4 h-4" />
+              <span className="mono text-[11px] uppercase tracking-widest">
+                execution
+              </span>
+              <ChevronRight className={`w-3 h-3 transition-transform ${drawerOpen ? 'rotate-180' : ''}`} />
+            </button>
+          </div>
         </header>
 
         <ChatArea
@@ -237,6 +266,10 @@ export default function WorkspacePage() {
             inFlight={runInFlight}
           />
         </aside>
+      )}
+
+      {shareOpen && threadId && (
+        <ShareModal threadId={threadId} onClose={() => setShareOpen(false)} />
       )}
     </div>
   );

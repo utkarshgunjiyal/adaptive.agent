@@ -8,7 +8,7 @@ from bson import ObjectId
 
 from app.db import get_db
 from app.models import ToolBadge
-from app.services.vector_store import search as vector_search
+from app.services.hybrid_retrieval import hybrid_search
 
 
 async def search_document_chunks(
@@ -19,13 +19,15 @@ async def search_document_chunks(
     top_k: int = 6,
     **_: Any,
 ) -> dict[str, Any]:
-    """Semantic search over the user's PDF chunks."""
+    """Hybrid BM25 + dense + LLM-rerank search over the user's PDF chunks."""
     top_k = max(1, min(int(top_k or 6), 20))
     scoped_docs: list[str] | None = None
     if document_ids:
         scoped_docs = [str(d) for d in document_ids]
 
-    hits = await vector_search(user_id=user_id, query=query, top_k=top_k, document_ids=scoped_docs)
+    hits = await hybrid_search(
+        user_id=user_id, query=query, top_k=top_k, document_ids=scoped_docs
+    )
 
     evidence = [
         {

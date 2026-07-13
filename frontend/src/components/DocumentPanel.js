@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Upload, RefreshCw, FileText, Loader2, X, Check } from 'lucide-react';
-import { listDocuments, retryDocument, uploadDocument } from '../api';
+import { listDocuments, retryDocument, uploadDocumentsBulk } from '../api';
 import { formatBytes, formatDistanceToNow, statusColor } from '../lib/timeAgo';
 
 export default function DocumentPanel({ documents, onDocumentsChange, selectedIds, onSelectedChange }) {
@@ -33,20 +33,30 @@ export default function DocumentPanel({ documents, onDocumentsChange, selectedId
     return () => clearInterval(id);
   }, [refresh, documents]);
 
-  const upload = useCallback(async (file) => {
-    if (!file) return;
-    if (file.size > 25 * 1024 * 1024) {
-      toast.error('Max upload size is 25 MB');
-      return;
+  const upload = useCallback(async (fileList) => {
+    const files = Array.from(fileList || []).filter(Boolean);
+    if (!files.length) return;
+
+    // Client-side quick filter for very obvious issues; the server does the
+    // authoritative check.
+    const oversize = files.filter((f) => f.size > 25 * 1024 * 1024);
+    if (oversize.length) {
+      toast.error(`${oversize.length} file(s) exceed the 25 MB limit and were skipped.`);
     }
-    if (file.type && file.type !== 'application/pdf') {
-      toast.error('Only PDFs are supported.');
-      return;
-    }
+    const ok = files.filter((f) => f.size <= 25 * 1024 * 1024);
+    if (!ok.length) return;
+
     setUploading(true);
     try {
-      await uploadDocument(file);
-      toast.success(`Queued "${file.name}" for ingestion`);
+      const res = await uploadDocumentsBulk(ok);
+      const accepted = (res?.accepted || []).length;
+      const rejected = (res?.rejected || []).length;
+      if (accepted) toast.success(`Queued ${accepted} document(s) for ingestion`);
+      if (rejected) {
+        toast.error(
+          `${rejected} file(s) rejected: ${(res.rejected || []).map((r) => `${r.filename} — ${r.reason}`).join(' · ')}`,
+        );
+      }
       await refresh();
     } catch (err) {
       const detail = err?.response?.data?.detail;
@@ -59,8 +69,8 @@ export default function DocumentPanel({ documents, onDocumentsChange, selectedId
   const onDrop = useCallback((e) => {
     e.preventDefault();
     setDragOver(false);
-    const file = e.dataTransfer?.files?.[0];
-    if (file) upload(file);
+    const files = e.dataTransfer?.files;
+    if (files?.length) upload(files);
   }, [upload]);
 
   const onRetry = useCallback(async (id) => {
@@ -92,7 +102,8 @@ export default function DocumentPanel({ documents, onDocumentsChange, selectedId
           ref={inputRef}
           type="file"
           accept="application/pdf"
-          onChange={(e) => upload(e.target.files?.[0])}
+          multiple
+          onChange={(e) => upload(e.target.files)}
           className="hidden"
           data-testid="upload-file-input"
         />
@@ -103,9 +114,9 @@ export default function DocumentPanel({ documents, onDocumentsChange, selectedId
             <Upload className="w-5 h-5 text-night-textMuted" />
           )}
           <div className="mono text-[10px] uppercase tracking-widest text-night-textMuted">
-            {uploading ? 'uploading…' : 'drop pdf here or click'}
+            {uploading ? 'uploading…' : 'drop pdfs here or click'}
           </div>
-          <div className="text-[11px] text-night-textMuted opacity-60">Max 25 MB · PDF only</div>
+          <div className="text-[11px] text-night-textMuted opacity-60">Max 25 MB · PDF only · multi-file OK</div>
         </div>
       </div>
 

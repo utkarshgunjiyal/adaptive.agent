@@ -96,6 +96,7 @@ def _build_registry() -> ToolRegistry:
         list_user_documents,
         search_document_chunks,
     )
+    from app.tools.user_preferences import get_user_preferences, save_user_preference
     from app.tools.web_search import tavily_web_search
     from app.tools.paper_search import arxiv_search
 
@@ -194,6 +195,47 @@ def _build_registry() -> ToolRegistry:
             "What research exists on RAG evaluation?",
         ],
         executor=arxiv_search,
+        is_available=lambda: True,
+    ))
+
+    reg.register(ToolSpec(
+        id="get_user_preferences",
+        name="Get my saved preferences",
+        description=(
+            "Return the user's saved preferences (research topics, preferred "
+            "answer style, etc). Use this only when the user explicitly asks "
+            "about their preferences or the answer should be personalised."
+        ),
+        kind="internal",
+        risk_level="read",
+        requires_approval=False,
+        keywords=["my preferences", "settings", "what did i save", "my topics"],
+        badge=ToolBadge.CONTEXT,
+        typical_questions=["What preferences have I saved?"],
+        executor=get_user_preferences,
+        is_available=lambda: True,
+    ))
+
+    reg.register(ToolSpec(
+        id="save_user_preference",
+        name="Save a preference (requires approval)",
+        description=(
+            "Persist a key/value preference for the user. WRITE tool — "
+            "requires explicit user approval before execution. Arguments: "
+            "`key` (string), `value` (any). Only propose when the user "
+            "explicitly asks to save something."
+        ),
+        kind="internal",
+        risk_level="write",
+        requires_approval=True,
+        keywords=["save", "remember", "store", "preference", "note that",
+                  "remind me", "don't forget"],
+        badge=ToolBadge.CONTEXT,
+        typical_questions=[
+            "Save my preferred research topic as 'agentic RAG'.",
+            "Remember that I prefer concise answers.",
+        ],
+        executor=save_user_preference,
         is_available=lambda: True,
     ))
 

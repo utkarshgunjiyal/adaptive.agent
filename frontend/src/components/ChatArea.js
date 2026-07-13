@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Send, Loader2, FileText, BookOpen, Globe, MessageSquare, ArrowUpRight } from 'lucide-react';
-import { streamAgentRun } from '../api';
+import { streamAgentRun, listMessages } from '../api';
+import ApprovalCard from './ApprovalCard';
 
 export default function ChatArea({
   threadId,
@@ -22,6 +23,7 @@ export default function ChatArea({
   const [streamingText, setStreamingText] = useState('');
   const [streamingCitations, setStreamingCitations] = useState([]);
   const [streamingBadges, setStreamingBadges] = useState([]);
+  const [pendingApproval, setPendingApproval] = useState(null); // {runId, steps}
   const scrollRef = useRef(null);
 
   useEffect(() => {
@@ -72,6 +74,8 @@ export default function ChatArea({
           } else if (event === 'evidence_ready') {
             setStreamingCitations(data.items || []);
             finalCitations = data.items || [];
+          } else if (event === 'waiting_approval') {
+            setPendingApproval({ runId: data.run_id, steps: data.steps || [] });
           } else if (event === 'run_completed') {
             finalAnswer = data.answer || finalAnswer;
             finalCitations = data.citations || finalCitations;
@@ -127,6 +131,23 @@ export default function ChatArea({
                 text={streamingText}
                 citations={streamingCitations}
                 badges={streamingBadges}
+              />
+            )}
+            {pendingApproval && (
+              <ApprovalCard
+                runId={pendingApproval.runId}
+                steps={pendingApproval.steps}
+                onResolved={async (kind, run) => {
+                  setPendingApproval(null);
+                  setRunInFlight(false);
+                  // Refetch the persisted messages so the resolved assistant
+                  // message + citations appear naturally.
+                  try {
+                    const fresh = await listMessages(threadId);
+                    setMessages(fresh);
+                  } catch (_err) { /* toast already shown */ }
+                  refreshThreads();
+                }}
               />
             )}
           </div>

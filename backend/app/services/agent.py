@@ -37,7 +37,8 @@ from app.models import (
     ToolCallLog,
 )
 from app.services import thread_service
-from app.services.llm import complete, extract_json, stream
+from app.services.llm import complete, complete_json, extract_json, stream
+from app.services.thread_summary import get_context_for_run, maybe_update_summary
 from app.tools.registry import ToolSpec, get_registry
 
 log = logging.getLogger("runner.agent")
@@ -142,9 +143,47 @@ def _shortlisted_prompt(tools: list[ToolSpec], message: str,
 async def plan(*, message: str, tools: list[ToolSpec], document_ids: list[str],
                has_docs: bool, user_id: str, run_id: str) -> AgentPlan:
     prompt = _shortlisted_prompt(tools, message, document_ids, has_docs)
+
+    # Preferred path: schema-validated JSON planner. Falls back to the older
+    # prompt-parsing approach if the model can't produce a valid plan.
+    plan_obj = await complete_json(
+        session_id=f"planner:{user_id}:{run_id}",
+        system=_PLANNER_SYSTEM,
+        user=prompt,
+        schema=AgentPlan,
+        max_tokens=800,
+        retries=1,
+    )
+    if plan_obj is not None:
+        # Filter to allowed tool ids and inject query defaults.
+        allowed_ids = {t.id for t in tools}
+        cleaned_steps: list[PlanStep] = []
+        for i, s in enumerate(plan_obj.steps or []):
+            if s.tool_id not in allowed_ids:
+                continue
+            args = dict(s.arguments or {})
+            if not args.get("query") and s.tool_id in {
+                "search_document_chunks", "web_search", "paper_search"
+            }:
+                args["query"] = message
+            if s.tool_id == "search_document_chunks" and document_ids and not args.get("document_ids"):
+                args["document_ids"] = document_ids
+            cleaned_steps.append(PlanStep(
+                id=s.id or f"s{i+1}",
+                tool_id=s.tool_id,
+                arguments=args,
+                depends_on=s.depends_on,
+                rationale=s.rationale,
+                expected_output=s.expected_output,
+                requires_approval=s.requires_approval,
+            ))
+        if cleaned_steps:
+            return AgentPlan(goal=plan_obj.goal, reasoning=plan_obj.reasoning, steps=cleaned_steps)
+
+    # Fallback: old prompt-parsing planner.
     try:
         raw = await complete(
-            session_id=f"planner:{user_id}:{run_id}",
+            session_id=f"planner:{user_id}:{run_id}#fb",
             system=_PLANNER_SYSTEM,
             user=prompt,
             max_tokens=800,
@@ -172,7 +211,6 @@ async def plan(*, message: str, tools: list[ToolSpec], document_ids: list[str],
             "search_document_chunks", "web_search", "paper_search"
         }:
             args["query"] = message
-        # Scope document ids from the request unless the plan overrides.
         if tool_id == "search_document_chunks" and document_ids and not args.get("document_ids"):
             args["document_ids"] = document_ids
         steps.append(
@@ -222,6 +260,18 @@ def _fallback_plan(message: str, tools: list[ToolSpec], has_docs: bool) -> Agent
 # --------------------------------------------------------------------------
 
 def validate_plan(agent_plan: AgentPlan) -> tuple[bool, list[str], list[PlanStep]]:
+    """Split plan steps into (auto-runnable, approval-required, invalid).
+
+    Returns ``(ok, problems, approval_needed)`` where:
+    * ``problems`` — unknown/unavailable tools that block the whole plan
+    * ``approval_needed`` — plan steps that must be user-approved before
+      executing (write / sensitive / any tool with ``requires_approval``)
+    * ``ok`` is True iff there are no blocking problems.
+
+    Notice that ``approval_needed`` being non-empty does NOT set ``ok=False``
+    on its own. The executor uses ``approval_needed`` to decide whether to
+    pause; the run is only *failed* when there are actual policy problems.
+    """
     reg = get_registry()
     problems: list[str] = []
     approval_needed: list[PlanStep] = []
@@ -235,8 +285,18 @@ def validate_plan(agent_plan: AgentPlan) -> tuple[bool, list[str], list[PlanStep
             continue
         if spec.requires_approval or spec.risk_level != "read":
             approval_needed.append(step)
-    ok = not problems and not approval_needed
+    ok = not problems
     return ok, problems, approval_needed
+
+
+def steps_needing_approval(agent_plan: AgentPlan) -> list[PlanStep]:
+    reg = get_registry()
+    out: list[PlanStep] = []
+    for step in agent_plan.steps:
+        spec = reg.get(step.tool_id)
+        if spec and (spec.requires_approval or spec.risk_level != "read"):
+            out.append(step)
+    return out
 
 
 # --------------------------------------------------------------------------

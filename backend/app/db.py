@@ -53,6 +53,11 @@ async def ensure_indexes() -> None:
 
     await db.user_preferences.create_index([("user_id", 1), ("key", 1)], unique=True)
 
+    await db.digest_schedules.create_index([("user_id", 1), ("created_at", -1)])
+    await db.digests.create_index([("user_id", 1), ("created_at", -1)])
+    await db.threads.create_index("share_token", unique=True,
+                                  partialFilterExpression={"share_token": {"$type": "string"}})
+
 
 async def close_client() -> None:
     global _client, _db

@@ -23,7 +23,6 @@ from app.models import DocumentPublic, DocumentStatus, JobPublic, UploadResponse
 from app.services import ingest, storage
 
 router = APIRouter(prefix="/api", tags=["documents"])
-
 _PDF_MAGIC = b"%PDF-"
 
 
@@ -133,6 +132,75 @@ async def upload_document(
     return UploadResponse(
         document_id=document_id, job_id=job_id, status=DocumentStatus.QUEUED
     )
+
+
+@router.post("/documents/upload_bulk", status_code=202)
+async def upload_documents_bulk(
+    background: BackgroundTasks,
+    files: list[UploadFile] = File(...),
+    user=Depends(get_current_user),
+):
+    """Upload multiple PDFs at once. Each file is validated independently
+    and either accepted (with document_id + job_id) or rejected (with
+    reason). The response reports both lists — the client can update the
+    upload queue UI accordingly."""
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided.")
+    if len(files) > 10:
+        raise HTTPException(status_code=413, detail="Max 10 files per request.")
+
+    db = get_db()
+    accepted: list[dict] = []
+    rejected: list[dict] = []
+    now = datetime.now(timezone.utc)
+
+    for file in files:
+        content_type = (file.content_type or "").split(";")[0].strip().lower()
+        if content_type != "application/pdf":
+            rejected.append({"filename": file.filename or "?",
+                             "reason": "Only application/pdf is supported."})
+            continue
+        data = await file.read()
+        size = len(data)
+        if size == 0:
+            rejected.append({"filename": file.filename or "?", "reason": "Empty file."})
+            continue
+        if size > settings.max_upload_bytes:
+            rejected.append({"filename": file.filename or "?",
+                             "reason": f"Too large ({size} bytes)."})
+            continue
+        if not data.startswith(_PDF_MAGIC):
+            rejected.append({"filename": file.filename or "?",
+                             "reason": "Not a valid PDF (magic bytes mismatch)."})
+            continue
+
+        filename = _safe_filename(file.filename)
+        storage_key = f"{uuid.uuid4().hex}_{filename}"
+        storage.put_object(user["id"], storage_key, data)
+
+        doc = {
+            "user_id": user["id"], "filename": filename,
+            "content_type": content_type, "size_bytes": size,
+            "storage_key": storage_key, "status": DocumentStatus.QUEUED,
+            "created_at": now, "updated_at": now,
+            "summary": None, "page_count": None,
+            "chunk_count": None, "error": None,
+        }
+        doc_res = await db.documents.insert_one(doc)
+        document_id = str(doc_res.inserted_id)
+        job = {
+            "user_id": user["id"], "document_id": document_id,
+            "status": DocumentStatus.QUEUED, "progress": 0,
+            "attempt_count": 0, "created_at": now,
+            "started_at": None, "completed_at": None, "error": None,
+        }
+        job_res = await db.jobs.insert_one(job)
+        job_id = str(job_res.inserted_id)
+        background.add_task(_kick_off_ingest, user["id"], document_id, job_id)
+        accepted.append({"document_id": document_id, "job_id": job_id,
+                         "filename": filename, "status": DocumentStatus.QUEUED.value})
+
+    return {"accepted": accepted, "rejected": rejected}
 
 
 @router.get("/documents", response_model=list[DocumentPublic])

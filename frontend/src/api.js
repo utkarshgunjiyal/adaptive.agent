@@ -76,12 +76,60 @@ export async function uploadDocument(file) {
   });
   return data;
 }
+export async function uploadDocumentsBulk(files) {
+  const fd = new FormData();
+  files.forEach((f) => fd.append('files', f));
+  const { data } = await api.post('/documents/upload_bulk', fd, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return data;
+}
 export async function retryDocument(id) {
   const { data } = await api.post(`/documents/${id}/retry`);
   return data;
 }
 export async function getJob(id) {
   const { data } = await api.get(`/jobs/${id}`);
+  return data;
+}
+
+// ---- Approvals ----
+export async function approveRun(runId) {
+  const { data } = await api.post(`/agent/runs/${runId}/approve`);
+  return data;
+}
+export async function rejectRun(runId) {
+  const { data } = await api.post(`/agent/runs/${runId}/reject`);
+  return data;
+}
+
+// ---- Sharing ----
+export async function enableSharing(threadId) {
+  const { data } = await api.post(`/threads/${threadId}/share`);
+  return data;
+}
+export async function disableSharing(threadId) {
+  await api.delete(`/threads/${threadId}/share`);
+}
+export async function getSharedThread(token) {
+  const { data } = await api.get(`/share/${token}`);
+  return data;
+}
+
+// ---- Digests ----
+export async function listDigestSchedules() {
+  const { data } = await api.get('/digests/schedules');
+  return data;
+}
+export async function createDigestSchedule(topic, cadence) {
+  const { data } = await api.post('/digests/schedules', { topic, cadence });
+  return data;
+}
+export async function deleteDigestSchedule(id) {
+  await api.delete(`/digests/schedules/${id}`);
+}
+export async function listDigests() {
+  const { data } = await api.get('/digests');
   return data;
 }
 

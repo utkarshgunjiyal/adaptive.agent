@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './AuthContext';
 import LandingPage from './pages/LandingPage';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
+import SharedThreadPage from './pages/SharedThreadPage';
 import WorkspacePage from './pages/WorkspacePage';
 
 function ProtectedRoute({ children }) {
@@ -46,6 +47,7 @@ export default function App() {
       />
       <Routes>
         <Route path="/" element={<LandingPage />} />
+        <Route path="/share/:token" element={<SharedThreadPage />} />
         <Route path="/login" element={<AuthRedirect><LoginPage /></AuthRedirect>} />
         <Route path="/register" element={<AuthRedirect><RegisterPage /></AuthRedirect>} />
         <Route path="/app" element={<ProtectedRoute><WorkspacePage /></ProtectedRoute>} />

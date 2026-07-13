@@ -32,7 +32,8 @@ def _public(user_doc: dict) -> UserPublic:
 
 @router.post("/register", response_model=TokenResponse)
 async def register(payload: UserRegisterRequest, request: Request):
-    key = f"auth:register:{request.client.host if request.client else 'anon'}"
+    from app.auth import client_ip
+    key = f"auth:register:{client_ip(request)}"
     check_rate_limit(key, settings.rate_limit_auth_per_minute)
 
     db = get_db()
@@ -58,7 +59,8 @@ async def register(payload: UserRegisterRequest, request: Request):
 
 @router.post("/login", response_model=TokenResponse)
 async def login(payload: UserLoginRequest, request: Request):
-    key = f"auth:login:{request.client.host if request.client else 'anon'}"
+    from app.auth import client_ip
+    key = f"auth:login:{client_ip(request)}"
     check_rate_limit(key, settings.rate_limit_auth_per_minute)
 
     db = get_db()

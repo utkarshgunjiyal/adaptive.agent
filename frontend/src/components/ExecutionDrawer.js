@@ -132,14 +132,31 @@ export default function ExecutionDrawer({ runId, events, inFlight }) {
             </Section>
 
             {state.completed && (
-              <div className="border border-signal-doc/40 bg-signal-doc/5 p-3">
+              <div className="border border-signal-doc/40 bg-signal-doc/5 p-3 space-y-2" data-testid="run-completed-card">
                 <div className="mono text-[10px] uppercase tracking-widest text-signal-doc flex items-center gap-2">
                   <CheckCircle2 className="w-3 h-3" />
                   completed
                 </div>
-                {state.durationMs != null && (
-                  <div className="mono text-[10px] text-night-textMuted mt-1 tabular">
-                    duration · {state.durationMs}ms
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <Stat label="duration" value={state.durationMs != null ? `${state.durationMs}ms` : '—'} />
+                  <Stat label="tools" value={state.toolCalls.length} />
+                  <Stat label="evidence" value={state.evidence.length} />
+                </div>
+                {state.toolCalls.length > 0 && (
+                  <div className="pt-2 border-t border-night-border">
+                    <div className="mono text-[10px] uppercase tracking-widest text-night-textMuted mb-1">
+                      per-tool latency
+                    </div>
+                    <ul className="space-y-0.5">
+                      {state.toolCalls.map((c, i) => (
+                        <li key={i} className="flex items-center gap-2 mono text-[10px]">
+                          <span className="text-night-text truncate flex-1">{c.tool_id}</span>
+                          <span className="text-night-textMuted tabular">
+                            {c.latency_ms != null ? `${c.latency_ms}ms` : '—'}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
                   </div>
                 )}
               </div>
@@ -158,6 +175,15 @@ export default function ExecutionDrawer({ runId, events, inFlight }) {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function Stat({ label, value }) {
+  return (
+    <div className="border border-night-border py-1.5 px-1">
+      <div className="mono text-sm tabular text-night-text">{value}</div>
+      <div className="mono text-[9px] text-night-textMuted uppercase tracking-widest">{label}</div>
     </div>
   );
 }

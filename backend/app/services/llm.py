@@ -1,11 +1,14 @@
 """LLM client wrapper over emergentintegrations.LlmChat.
 
-Runner.ai uses gpt-5.2 via the Emergent Universal LLM key. We expose two
+Runner.ai uses gpt-5.2 via the Emergent Universal LLM key. We expose three
 call shapes:
 
 * ``complete(system, user, ...)`` — one-shot completion (planner, summarizer,
   synthesizer). Uses ``send_message`` because the caller needs the full
   response before continuing (e.g. to parse JSON, evaluate a plan).
+* ``complete_json(system, user, schema=...)`` — one-shot completion asking
+  the model to return JSON conforming to a Pydantic schema. This is used
+  by the planner so an invalid plan is rare.
 * ``stream(system, user, ...)`` — token-streaming generator used by the SSE
   endpoint so the frontend can render tokens as they arrive.
 
@@ -18,7 +21,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import AsyncIterator
+from typing import AsyncIterator, Type
 
 from emergentintegrations.llm.chat import (
     LlmChat,
@@ -26,6 +29,7 @@ from emergentintegrations.llm.chat import (
     TextDelta,
     UserMessage,
 )
+from pydantic import BaseModel, ValidationError
 
 from app.config import settings
 
@@ -46,8 +50,59 @@ async def complete(*, session_id: str, system: str, user: str, max_tokens: int |
     result = await chat.send_message(UserMessage(text=user))
     if isinstance(result, str):
         return result
-    # Some providers return an object with `.text` attribute.
     return getattr(result, "text", str(result))
+
+
+async def complete_json(
+    *,
+    session_id: str,
+    system: str,
+    user: str,
+    schema: Type[BaseModel],
+    max_tokens: int | None = None,
+    retries: int = 1,
+) -> BaseModel | None:
+    """One-shot completion that MUST return JSON matching ``schema``.
+
+    We ask gpt-5.2 for JSON, parse it, and validate against the Pydantic
+    schema. On validation failure we retry once with the error message
+    appended to the prompt.
+    """
+    schema_json = json.dumps(schema.model_json_schema(), indent=2)[:4000]
+    hard_system = (
+        f"{system}\n\n"
+        "You MUST respond with a single JSON object that conforms exactly "
+        "to the following JSON schema. Do not include prose, do not include "
+        "code fences, output ONLY the JSON object.\n\n"
+        f"JSON SCHEMA:\n{schema_json}"
+    )
+
+    last_err: str | None = None
+    prompt = user
+    for attempt in range(retries + 1):
+        try:
+            raw = await complete(
+                session_id=f"{session_id}#json{attempt}",
+                system=hard_system,
+                user=prompt,
+                max_tokens=max_tokens,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        parsed = extract_json(raw)
+        if parsed is None:
+            last_err = "response was not parseable JSON"
+        else:
+            try:
+                return schema.model_validate(parsed)
+            except ValidationError as ve:
+                last_err = str(ve)[:600]
+        prompt = (
+            f"{user}\n\n"
+            f"Your previous attempt failed validation: {last_err}\n"
+            "Return corrected JSON that satisfies the schema."
+        )
+    return None
 
 
 async def stream(*, session_id: str, system: str, user: str) -> AsyncIterator[str]:
@@ -66,25 +121,16 @@ _JSON_FENCE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
 
 
 def extract_json(text: str) -> dict | list | None:
-    """Try to parse a JSON object/array out of an LLM response.
-
-    Handles common patterns:
-    * raw JSON,
-    * a fenced ```json ... ``` block,
-    * JSON preceded by an explanatory sentence.
-    """
+    """Try to parse a JSON object/array out of an LLM response."""
     if text is None:
         return None
     text = text.strip()
-    # Fenced?
     match = _JSON_FENCE.search(text)
     candidate = match.group(1).strip() if match else text
-    # First open brace / bracket forward.
     for opener, closer in [("{", "}"), ("[", "]")]:
         start = candidate.find(opener)
         if start == -1:
             continue
-        # Scan forward tracking nesting to find the matching close.
         depth = 0
         for i in range(start, len(candidate)):
             ch = candidate[i]

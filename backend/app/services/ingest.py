@@ -30,6 +30,7 @@ from app.models import DocumentStatus
 from app.services import storage
 from app.services.embeddings import embed_texts
 from app.services.llm import complete
+from app.services.ocr import ocr_pages
 from app.services.vector_store import upsert_chunks
 
 log = logging.getLogger("runner.ingest")
@@ -151,6 +152,20 @@ async def ingest_document(*, user_id: str, document_id: str, job_id: str) -> Non
         data = storage.get_object(user_id, doc["storage_key"])
 
         pages = _extract_pages(data)
+
+        # OCR fallback: pages that yielded no text may be scanned images.
+        empty_pages = [i + 1 for i, p in enumerate(pages) if not p]
+        if empty_pages:
+            log.info("ingest: %s empty page(s), attempting OCR", len(empty_pages))
+            ocr_result = ocr_pages(data, empty_pages[:20])  # cap at 20 pages
+            for page_no, text in ocr_result.items():
+                pages[page_no - 1] = text
+            if ocr_result:
+                await db.documents.update_one(
+                    {"_id": doc["_id"]},
+                    {"$set": {"ocr_pages_extracted": len(ocr_result)}},
+                )
+
         await db.jobs.update_one({"_id": job_oid}, {"$set": {"progress": 30}})
 
         chunk_records = _chunk_pages(pages)
