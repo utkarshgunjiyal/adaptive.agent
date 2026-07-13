@@ -139,9 +139,14 @@ export async function listTools() {
   return data;
 }
 
-// ---- Agent run (SSE) ----
+// ---- Agent runs ----
 export async function getRun(id) {
   const { data } = await api.get(`/agent/runs/${id}`);
+  return data;
+}
+
+export async function getPendingApproval(threadId) {
+  const { data } = await api.get(`/agent/threads/${threadId}/pending_approval`);
   return data;
 }
 

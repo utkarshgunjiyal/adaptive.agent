@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Send, Loader2, FileText, BookOpen, Globe, MessageSquare, ArrowUpRight } from 'lucide-react';
-import { streamAgentRun, listMessages } from '../api';
+import { streamAgentRun, listMessages, getPendingApproval } from '../api';
 import ApprovalCard from './ApprovalCard';
 
 export default function ChatArea({
@@ -30,6 +30,26 @@ export default function ChatArea({
     // scroll to bottom on new message
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages, streamingText]);
+
+  // Hydrate approval card on page reload: if the current thread has a
+  // waiting_approval run, restore the ApprovalCard so the user can resolve
+  // it after refreshing the page.
+  useEffect(() => {
+    if (!threadId) {
+      setPendingApproval(null);
+      return;
+    }
+    (async () => {
+      try {
+        const res = await getPendingApproval(threadId);
+        if (res.pending) {
+          setPendingApproval({ runId: res.run_id, steps: res.steps || [] });
+        } else {
+          setPendingApproval(null);
+        }
+      } catch (_err) { /* silent — approval card just won't show */ }
+    })();
+  }, [threadId]);
 
   const send = useCallback(async () => {
     const text = input.trim();

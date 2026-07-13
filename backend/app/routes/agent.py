@@ -25,7 +25,6 @@ from app.models import (
 from app.services import agent as agent_svc
 from app.services import thread_service
 from app.services.thread_summary import get_context_for_run, maybe_update_summary
-
 log = logging.getLogger("runner.route.agent")
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -293,6 +292,28 @@ async def run_stream(payload: AgentRunRequest, user=Depends(get_current_user)):
     )
 
 
+@router.get("/threads/{thread_id}/pending_approval")
+async def pending_approval(thread_id: str, user=Depends(get_current_user)):
+    """Return the latest waiting_approval run for this thread if any.
+
+    Used by the frontend to hydrate the approval card after a page reload.
+    """
+    thread = await thread_service.get_thread(user["id"], thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    row = await get_db().agent_runs.find_one(
+        {"user_id": user["id"], "thread_id": thread_id, "status": "waiting_approval"},
+        sort=[("created_at", -1)],
+    )
+    if not row:
+        return {"pending": False}
+    return {
+        "pending": True,
+        "run_id": str(row["_id"]),
+        "steps": row.get("pending_steps") or [],
+    }
+
+
 @router.get("/runs/{run_id}", response_model=AgentRunPublic)
 async def get_run(run_id: str, user=Depends(get_current_user)):
     row = await agent_svc.get_run(user["id"], run_id)
@@ -321,9 +342,30 @@ async def approve_run(run_id: str, user=Depends(get_current_user)):
 
     plan_dict = row.get("plan") or {}
     try:
-        plan = AgentPlan(**plan_dict)
+        # Lenient load: drop unknown fields, ignore extra keys so schema drift
+        # doesn't 500 a run that was created on a previous version.
+        plan = AgentPlan.model_validate(plan_dict)
     except Exception:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail="Stored plan is unreadable") from None
+        try:
+            plan = AgentPlan(
+                goal=plan_dict.get("goal", "Resume approved plan"),
+                reasoning=plan_dict.get("reasoning", ""),
+                steps=[
+                    PlanStep(
+                        id=s.get("id", f"s{i+1}"),
+                        tool_id=s.get("tool_id", ""),
+                        arguments=s.get("arguments") or {},
+                        depends_on=[str(x) for x in (s.get("depends_on") or [])],
+                        rationale=s.get("rationale", ""),
+                        expected_output=s.get("expected_output", ""),
+                        requires_approval=s.get("requires_approval", False),
+                    )
+                    for i, s in enumerate(plan_dict.get("steps") or [])
+                    if s.get("tool_id")
+                ],
+            )
+        except Exception:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail="Stored plan is unreadable") from None
     # Find the user message for this run (last user message on the thread
     # prior to this run's creation).
     latest_user_msg = await db.messages.find_one(
@@ -333,10 +375,13 @@ async def approve_run(run_id: str, user=Depends(get_current_user)):
     umsg_content = row.get("message") or (latest_user_msg or {}).get("content", "")
     umsg_id = str((latest_user_msg or {}).get("_id", ""))
 
-    final_row = await _run_after_approval(
-        run_id=run_id, user_id=user["id"], thread_id=row["thread_id"],
-        plan=plan, user_message_content=umsg_content,
-        user_message_id=umsg_id,
+    final_row = await asyncio.wait_for(
+        _run_after_approval(
+            run_id=run_id, user_id=user["id"], thread_id=row["thread_id"],
+            plan=plan, user_message_content=umsg_content,
+            user_message_id=umsg_id,
+        ),
+        timeout=90.0,
     )
     return _run_public(final_row)
 

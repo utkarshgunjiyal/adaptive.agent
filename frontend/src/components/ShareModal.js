@@ -30,13 +30,33 @@ export default function ShareModal({ threadId, onClose }) {
 
   const copyLink = async () => {
     if (!shareUrl) return;
+    // Primary: modern async clipboard API. Fallback: legacy execCommand on
+    // a hidden textarea — required for headless/older browsers and non-HTTPS
+    // origins where Clipboard API rejects.
     try {
-      await navigator.clipboard.writeText(shareUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (navigator.clipboard && window.isSecureContext !== false) {
+        await navigator.clipboard.writeText(shareUrl);
+      } else {
+        throw new Error('clipboard API unavailable');
+      }
     } catch (_) {
-      toast.error('Copy failed');
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = shareUrl;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch (_err) {
+        toast.error('Copy failed — please copy manually.');
+        return;
+      }
     }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   const revoke = async () => {

@@ -111,13 +111,16 @@ open http://localhost:3000
 
 ## Tool registry
 
-| id                        | kind     | risk | badge          | description                                     |
-| ------------------------- | -------- | ---- | -------------- | ----------------------------------------------- |
-| `search_document_chunks`  | internal | read | private_doc    | Semantic search across the user's PDFs         |
-| `get_document_summary`    | internal | read | private_doc    | Return the cached per-doc summary              |
-| `list_user_documents`     | internal | read | context        | List available documents + statuses            |
-| `web_search`              | api      | read | web_source     | Tavily web search (marked unavailable if no key)|
-| `paper_search`            | api      | read | research_paper | arXiv paper search                              |
+| id                        | kind     | risk  | badge          | description                                     |
+| ------------------------- | -------- | ----- | -------------- | ----------------------------------------------- |
+| `search_document_chunks`  | internal | read  | private_doc    | **Hybrid** BM25 + dense + gpt-5.2 rerank search |
+| `get_document_summary`    | internal | read  | private_doc    | Return the cached per-doc summary               |
+| `list_user_documents`     | internal | read  | context        | List available documents + statuses             |
+| `web_search`              | api      | read  | web_source     | Tavily web search (marked unavailable if no key)|
+| `paper_search`            | api      | read  | research_paper | arXiv paper search                              |
+| `get_user_preferences`    | internal | read  | context        | Read the user's saved preferences               |
+| `save_user_preference`    | internal | **write** | context   | Persist a preference — **requires approval**    |
+| `mcp_<label>_<name>`      | mcp      | read  | context        | Any tool auto-discovered from `MCP_SERVERS` env |
 
 The registry lives in `backend/app/tools/registry.py`. Each tool exposes an executor callable and reports `available` based on config — a missing `TAVILY_API_KEY` makes `web_search` show as *unavailable* to the planner rather than fake success.
 
@@ -136,15 +139,24 @@ The registry lives in `backend/app/tools/registry.py`. Each tool exposes an exec
 | GET    | `/api/threads/{id}`                 | Thread metadata                             |
 | GET    | `/api/threads/{id}/messages`        | Message history                             |
 | POST   | `/api/documents/upload`             | Upload PDF (multipart) → job                |
+| POST   | `/api/documents/upload_bulk`        | Upload multiple PDFs at once                |
 | GET    | `/api/documents`                    | List user's documents                       |
 | GET    | `/api/documents/{id}`               | Document status + summary                   |
 | POST   | `/api/documents/{id}/retry`         | Retry failed ingestion                      |
 | GET    | `/api/jobs/{id}`                    | Ingestion job status                        |
 | POST   | `/api/agent/run/stream`             | SSE agent run (planner + tools + synth)     |
+| GET    | `/api/agent/threads/{id}/pending_approval` | Hydrate approval card after reload    |
 | GET    | `/api/agent/runs/{id}`              | Full run trace (plan · tool calls · evidence) |
 | POST   | `/api/agent/runs/{id}/approve`      | Approve a paused write/sensitive step       |
 | POST   | `/api/agent/runs/{id}/reject`       | Reject a paused step                        |
 | GET    | `/api/tools`                        | Public view of the tool registry            |
+| GET    | `/api/digests/schedules`            | List user's digest schedules                |
+| POST   | `/api/digests/schedules`            | Create schedule (topic + hourly/daily/weekly) |
+| DELETE | `/api/digests/schedules/{id}`       | Delete a schedule                           |
+| GET    | `/api/digests`                      | List past digest runs                       |
+| POST   | `/api/threads/{id}/share`           | Enable public read-only sharing             |
+| DELETE | `/api/threads/{id}/share`           | Revoke public sharing                       |
+| GET    | `/api/share/{token}`                | Public shared thread (no auth, rate-limited)|
 | GET    | `/api/health`                       | Liveness                                    |
 | GET    | `/api/ready`                        | Deep readiness (Mongo ping)                 |
 
@@ -185,9 +197,9 @@ Every interactive element has a `data-testid` (see `data-testid` audit in the co
 
 ## What's next
 
-Phase 5–6:
-- Structured JSON-schema planner output
-- Approval UI + one demo write tool (`save_user_preference`)
-- Generic MCP adapter (register any read-only MCP server at boot)
-- Hybrid retrieval (BM25 + dense) + reranking
-- Pytest + Playwright test suite
+Runner.ai V2 completes all P0/P1/P2 items surfaced in the V1 review — see the changelog in `/app/memory/PRD.md`. Remaining wishlist:
+
+- Real embeddings provider (drop-in `services/embeddings.py`) when an OpenAI-compatible embeddings endpoint becomes available through the Emergent Universal LLM key
+- Redis-backed rate limiter + Celery worker deployment (already scaffolded in `docker-compose.yml`)
+- Streaming `[n]` citation reconciliation at token-level
+- OpenGraph metadata on shared-thread pages for LinkedIn / Twitter previews

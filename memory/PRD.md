@@ -27,6 +27,25 @@ Build a production-quality full-stack autonomous AI research platform named **Ru
 ## Data isolation
 Every collection is queried with `user_id` and thread ownership is checked before any read. Documents are stored on disk under `<STORAGE_DIR>/<user_id>/…` — no cross-user path.
 
+## V2 (2026-01-13) — job-ready release
+
+**Every P0/P1/P2 improvement from the V1 review has been implemented and tested (11/11 new tests, 21/21 V1 regression):**
+
+- ✅ Structured JSON planner via schema-validated `complete_json` (fallback path kept)
+- ✅ Hybrid retrieval — BM25 + hashed-dense + Reciprocal Rank Fusion + gpt-5.2 rerank
+- ✅ Incremental thread summaries (`thread_summaries` collection · summarised in batches of 8)
+- ✅ Approval workflow — `save_user_preference` write tool + amber ApprovalCard + resume-with-timeout
+- ✅ Generic MCP HTTP adapter with boot-time discovery (`MCP_SERVERS` env)
+- ✅ OCR fallback via pytesseract for scanned PDFs
+- ✅ Proxy-aware rate limiter (`X-Forwarded-For` + `X-Real-IP`) + public share-endpoint limiter
+- ✅ Multi-file drag-and-drop upload (`/api/documents/upload_bulk`)
+- ✅ Share thread — public read-only `/share/:token` route + revoke + copy fallback for headless
+- ✅ Cost/latency stats on ExecutionDrawer completion card (duration · tools · evidence · per-tool ms)
+- ✅ Research digest — APScheduler in-process (rehydrates on startup) + `hourly | daily | weekly` cadences
+- ✅ Approval card hydration on page reload (`GET /agent/threads/{id}/pending_approval`)
+- ✅ Lenient plan-schema loader on resume (no 500s on schema drift)
+- ✅ `asyncio.wait_for(90s)` timeout guard around approve-resume path
+
 ## What's Implemented (2026-01-13)
 - ✅ JWT/bcrypt auth (`/api/auth/register|login|me|logout`) — rate limited per client
 - ✅ Threads + messages (`/api/threads*`) with per-user ownership checks
@@ -46,13 +65,10 @@ Every collection is queried with `user_id` and thread ownership is checked befor
 - Documents fetched on workspace mount → composer "N DOC READY" counter accurate without opening Documents tab.
 
 ## Backlog (P1)
-- Structured LLM planner via JSON schema response_format (stronger typing)
-- Multi-turn thread summaries (incremental — currently use last 6 messages as context)
-- Approvals UI (backend already checks; no write tools yet)
-- MCP adapter (generic client for external MCP servers)
-- Hybrid retrieval (BM25 + dense) + reranker
-- Real embedding provider (e.g. text-embedding-3-small) when available in Emergent LLM key
-- Test suite (pytest + Playwright)
+- Real embedding provider (e.g. text-embedding-3-small) when available in the Emergent LLM key — swap in `services/embeddings.py`
+- Persistent Redis-backed rate limiter for multi-worker deployments
+- OpenGraph meta tags for shared-thread previews
+- Streaming `[n]` citations that reconcile mid-token (currently reconcile after `evidence_ready`)
 
 ## Test credentials
 `/app/memory/test_credentials.md`

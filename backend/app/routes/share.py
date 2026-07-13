@@ -12,9 +12,10 @@ import secrets
 from datetime import datetime, timezone
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app.auth import get_current_user
+from app.auth import check_rate_limit, client_ip, get_current_user
+from app.config import settings
 from app.db import get_db
 
 router = APIRouter(prefix="/api", tags=["share"])
@@ -59,7 +60,10 @@ async def disable_sharing(thread_id: str, user=Depends(get_current_user)):
 
 
 @router.get("/share/{token}")
-async def get_shared_thread(token: str):
+async def get_shared_thread(token: str, request: Request):
+    # Public endpoint — rate-limit per client IP to prevent easy scraping
+    # of leaked tokens.
+    check_rate_limit(f"share:{client_ip(request)}", 60)
     db = get_db()
     t = await db.threads.find_one({"share_token": token, "share_enabled": True})
     if not t:
