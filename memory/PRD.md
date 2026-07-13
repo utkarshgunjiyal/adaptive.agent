@@ -28,25 +28,22 @@ Build a production-quality full-stack autonomous AI research platform named **Ru
 Every collection is queried with `user_id` and thread ownership is checked before any read. Documents are stored on disk under `<STORAGE_DIR>/<user_id>/…` — no cross-user path.
 
 ## What's Implemented (2026-01-13)
-- ✅ JWT/bcrypt auth (`/api/auth/register|login|me|logout`)
+- ✅ JWT/bcrypt auth (`/api/auth/register|login|me|logout`) — rate limited per client
 - ✅ Threads + messages (`/api/threads*`) with per-user ownership checks
-- ✅ PDF upload → validate → disk store → Mongo `documents` + `jobs` → async ingest (`asyncio.create_task`)
+- ✅ PDF upload → validate → disk store → Mongo `documents` + `jobs` → async ingest
 - ✅ pypdf text extraction, chunking (1200/180), deterministic hashed embeddings, Mongo vector store with cosine search
 - ✅ gpt-5.2 document summaries generated after ingestion
 - ✅ Tool registry with 5 tools: `search_document_chunks`, `get_document_summary`, `list_user_documents`, `web_search` (Tavily), `paper_search` (arXiv)
-- ✅ Deterministic capability selector filters to top-scored tools before the planner sees them
-- ✅ gpt-5.2 planner emits schema-validated `AgentPlan` (JSON); deterministic fallback plan on parse failure
-- ✅ Policy validator (read-only auto-runs; write/sensitive → approval — no such tools yet)
-- ✅ Parallel executor with dependencies, per-tool timeouts (30s), normalised `EvidenceItem`s
-- ✅ Grounded synthesizer streaming answer with `[n]` citations
-- ✅ `POST /api/agent/run/stream` (SSE) — real-time events: `run_started`, `capabilities_selected`, `plan_ready`, `tool_call`, `evidence_ready`, `answer_delta`, `run_completed`
-- ✅ `GET /api/agent/runs/{id}` — full run inspection
-- ✅ Frontend: landing, login/register, workspace (3-column: threads sidebar / chat / execution drawer)
-- ✅ Rich execution drawer showing selected capabilities · plan · tool calls · evidence · event stream · duration
-- ✅ Inline citation pills → open source URL
-- ✅ Sources list under each assistant message w/ badges (private_doc, research_paper, web_source, context)
-- ✅ Document upload dropzone, status badges, retry action, per-document summary reveal
-- ✅ Docker-compose stack for Postgres/Redis/Qdrant/MinIO/Celery variant
+- ✅ Deterministic capability selector + gpt-5.2 planner emitting JSON `AgentPlan` + policy validator
+- ✅ Parallel executor with dependencies, per-tool timeouts, normalised `EvidenceItem`s
+- ✅ Grounded synthesizer streaming `[n]` citations via SSE
+- ✅ Full run inspection (`GET /api/agent/runs/{id}`) + approve/reject endpoints for future write tools
+- ✅ Frontend: landing, login/register, workspace (3-column) with execution drawer
+- ✅ Docker-compose stack (Postgres/Redis/Qdrant/MinIO/Celery/nginx) for local production deploy
+- ✅ QA: 21/21 backend pytest + full E2E Playwright flow passing (`/app/test_reports/iteration_1.json`)
+
+## Post-V1 fixes (2026-01-13)
+- Documents fetched on workspace mount → composer "N DOC READY" counter accurate without opening Documents tab.
 
 ## Backlog (P1)
 - Structured LLM planner via JSON schema response_format (stronger typing)

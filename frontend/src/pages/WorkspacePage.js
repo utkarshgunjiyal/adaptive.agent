@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { LogOut, MessageSquarePlus, ChevronRight, Terminal } from 'lucide-react';
 import { useAuth } from '../AuthContext';
-import { createThread, listMessages, listThreads } from '../api';
+import { createThread, listDocuments, listMessages, listThreads } from '../api';
 import ThreadSidebar from '../components/ThreadSidebar';
 import DocumentPanel from '../components/DocumentPanel';
 import ChatArea from '../components/ChatArea';
@@ -41,6 +41,19 @@ export default function WorkspacePage() {
   useEffect(() => {
     refreshThreads();
   }, [refreshThreads]);
+
+  // Fetch documents once on workspace mount so the composer footer + doc
+  // scope UX work before the user visits the Documents tab.
+  useEffect(() => {
+    (async () => {
+      try {
+        const docs = await listDocuments();
+        setDocuments(docs);
+      } catch (_) {
+        /* ignored — DocumentPanel will refetch on mount */
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     if (!threadId) {
