@@ -1,0 +1,101 @@
+{
+  "theme": "light_preferred_with_dark_toggle",
+  "archetype": "Swiss & High-Contrast (Authority, Clarity, Truth) blended with Retro-Futurism for Agent Execution details",
+  "typography": {
+    "headings": {
+      "family": "Cormorant Garamond",
+      "weights": ["400", "600"],
+      "usage": "H1, H2, H3, marketing pages, auth pages, empty state titles. Gives an academic, authoritative, 'old money tech' feel.",
+      "css_class": "font-serif tracking-tight"
+    },
+    "body": {
+      "family": "IBM Plex Sans",
+      "weights": ["400", "500", "600"],
+      "usage": "Chat messages, standard UI text, buttons, inputs.",
+      "css_class": "font-sans leading-relaxed"
+    },
+    "mono": {
+      "family": "JetBrains Mono",
+      "weights": ["400", "500"],
+      "usage": "Agent execution details, logs, citations, tool badges, timestamps, step statuses. Brings the retro-futurism 'terminal' transparent vibe.",
+      "css_class": "font-mono text-sm tracking-tight"
+    }
+  },
+  "colors": {
+    "light": {
+      "background": "#FDFBF7",
+      "surface": "#FFFFFF",
+      "surface_alt": "#F3F1EC",
+      "text_primary": "#111111",
+      "text_secondary": "#525252",
+      "border": "#E5E2DC",
+      "primary": "#111111",
+      "primary_foreground": "#FFFFFF"
+    },
+    "dark": {
+      "background": "#111111",
+      "surface": "#1A1A1A",
+      "surface_alt": "#262626",
+      "text_primary": "#FDFBF7",
+      "text_secondary": "#A3A3A3",
+      "border": "#333333",
+      "primary": "#FDFBF7",
+      "primary_foreground": "#111111"
+    },
+    "tool_badges": {
+      "private_doc": { "bg": "bg-emerald-100 dark:bg-emerald-900/30", "text": "text-emerald-800 dark:text-emerald-300", "border": "border-emerald-200 dark:border-emerald-800" },
+      "research_paper": { "bg": "bg-indigo-100 dark:bg-indigo-900/30", "text": "text-indigo-800 dark:text-indigo-300", "border": "border-indigo-200 dark:border-indigo-800" },
+      "web_source": { "bg": "bg-rose-100 dark:bg-rose-900/30", "text": "text-rose-800 dark:text-rose-300", "border": "border-rose-200 dark:border-rose-800" },
+      "context": { "bg": "bg-slate-100 dark:bg-slate-800", "text": "text-slate-700 dark:text-slate-300", "border": "border-slate-200 dark:border-slate-700" }
+    }
+  },
+  "spacing_and_layout": {
+    "general": "Generous spacing. p-6 or p-8 for cards. Containers must have padding to prevent text collision.",
+    "auth_page": "Tetris grid. Split screen with a visually rich left side (image + grain) and clean form on the right. Form centered with high padding.",
+    "dashboard": "High Density Grid. Left sidebar (260px) for threads/documents. Center for chat. Right-drawer (or expandable inline console) for Execution Details.",
+    "execution_drawer": "Retro-terminal feel. Dense, monospace fonts, sharp 1px borders, step-by-step tree visualization for the agent's plan."
+  },
+  "surface_strategies": {
+    "cards": "Grid Borders (Technical look). 1px solid borders, no soft shadows. Sharp and objective.",
+    "headers": "Glassmorphism with a sharp 1px bottom border to separate from content. bg-white/80 backdrop-blur-xl.",
+    "agent_terminal": "Retro-Futurism. Deep dark background (even in light mode, maybe a very dark slate) for the execution drawer to emphasize 'under the hood' processing, or crisp technical borders."
+  },
+  "components": {
+    "buttons": "Sharp corners or rounded-sm max. No pill shapes for primary actions to maintain the authoritative/technical feel. Hover states must have clear high-contrast shifts.",
+    "badges": "Tool badges must use Mono font, uppercase, tight tracking. e.g., tracking-[0.05em].",
+    "inputs": "Shadcn default but customized to 0px or 2px border radius. Focus states must use ring-1 ring-primary.",
+    "chat_messages": "User messages: subtly tinted background. Agent messages: transparent background, with inline citations appearing as small super-script or interactive mono-font brackets [1].",
+    "document_dropzone": "Dashed border, generous p-12. Hover state background tint change.",
+    "status_badges": "Uploaded (slate), Queued (amber), Processing (blue/pulse), Ready (emerald), Failed (red)."
+  },
+  "motion_and_interaction": {
+    "general": "Crisp and fast. No slow fades.",
+    "hover": "Translate-y-[-1px] with shadow-sm for interactive document cards.",
+    "agent_typing": "Use a blinking cursor block (terminal style) rather than bouncing dots.",
+    "execution_steps": "Staggered entrance for agent plan steps as they are generated. Pulse animation on the 'processing' step."
+  },
+  "media_and_images": {
+    "auth_background": "https://images.pexels.com/photos/18903434/pexels-photo-18903434.jpeg (Contemporary minimalist library, represents organized knowledge)",
+    "empty_state_chat": "https://images.pexels.com/photos/34283792/pexels-photo-34283792.jpeg (Research desk setup, use as subtle background or cropped feature in empty states)"
+  },
+  "accessibility": {
+    "contrast": "Strict APCA/WCAG AA compliance. Never use gray-on-gray for essential text.",
+    "testing_attributes": "All interactive elements MUST include data-testid attributes (e.g., data-testid='upload-dropzone', data-testid='chat-submit-button')."
+  },
+  "libraries": {
+    "icons": "lucide-react (standardized, technical)",
+    "toasts": "sonner (positioned top-right or bottom-right)",
+    "charts": "recharts (if data visualization of execution timings is needed)"
+  },
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "Do not use generic centered layouts or simplistic gradients.",
+    "Use layered design elements with explicit z-index hierarchy.",
+    "DO NOT apply `transition: all`. Target specific properties.",
+    "DO NOT center align the app container in App.css.",
+    "Never use placeholder AI emojis for icons. Use lucide-react.",
+    "Toasts must use `sonner`.",
+    "DO NOT use transparent backgrounds for dropdowns, select menus, or sticky headers.",
+    "Maintain the distinct visual separation between 'User Space' (Chat) and 'Agent Space' (Execution Details).",
+    "Install Google Fonts in index.html: Cormorant Garamond, IBM Plex Sans, JetBrains Mono."
+  ]
+}
