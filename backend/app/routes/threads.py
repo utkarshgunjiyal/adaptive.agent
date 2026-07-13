@@ -1,101 +1,66 @@
-"""Thread / message / document APIs for the V2 product (Phase 43).
+"""Thread + message routes."""
 
-Every operation is scoped to the authenticated user (the ``get_current_user``
-seam shared with the agent router) and verifies thread ownership before reading
-messages or documents. Responses carry only SAFE fields — never storage keys,
-raw object metadata, or document content.
-"""
+from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.routes.agent import get_current_user, resolve_user_id
-from app.services import document_service, message_service, thread_service
+from app.auth import get_current_user
+from app.models import MessagePublic, ThreadCreateRequest, ThreadPublic
+from app.services import thread_service
 
-router = APIRouter(prefix="/threads", tags=["threads"])
+router = APIRouter(prefix="/api/threads", tags=["threads"])
 
 
-class CreateThreadRequest(BaseModel):
-    title: str | None = Field(default=None, max_length=200)
-
-
-class UpdateThreadRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=200)
-
-
-def _thread_view(thread: dict) -> dict:
-    return {
-        "thread_id": str(thread["_id"]),
-        "title": thread.get("title") or "New conversation",
-        "created_at": thread.get("created_at"),
-        "updated_at": thread.get("updated_at"),
-        "message_count": thread.get("message_count", 0),
-    }
-
-
-def _message_view(message: dict) -> dict:
-    return {
-        "seq": message.get("seq"),
-        "role": message.get("role"),
-        "content": message.get("content", ""),
-        "created_at": message.get("created_at"),
-    }
-
-
-def _document_view(document: dict) -> dict:
-    return {
-        "document_id": str(document["_id"]),
-        "filename": document.get("filename"),
-        "status": document.get("status"),
-        "page_count": document.get("page_count"),
-        "created_at": document.get("created_at"),
-    }
-
-
-@router.post("")
-async def create_thread(request: CreateThreadRequest, user=Depends(get_current_user)):
-    user_id = resolve_user_id(user)
-    title = (request.title or "New conversation").strip() or "New conversation"
-    thread = await thread_service.create_thread(user_id, title)
-    return _thread_view(thread)
-
-
-@router.get("")
-async def list_threads(user=Depends(get_current_user), limit: int = Query(50, ge=1, le=200)):
-    user_id = resolve_user_id(user)
-    threads = await thread_service.list_threads(user_id, limit=limit)
-    return {"threads": [_thread_view(t) for t in threads]}
-
-
-@router.get("/{thread_id}")
-async def get_thread(thread_id: str, user=Depends(get_current_user)):
-    user_id = resolve_user_id(user)
-    thread = await thread_service.get_thread(user_id, thread_id)  # 404 if not owned
-    return _thread_view(thread)
-
-
-@router.patch("/{thread_id}")
-async def rename_thread(thread_id: str, request: UpdateThreadRequest, user=Depends(get_current_user)):
-    user_id = resolve_user_id(user)
-    thread = await thread_service.update_thread_title(user_id, thread_id, request.title.strip())
-    return _thread_view(thread)
-
-
-@router.get("/{thread_id}/messages")
-async def list_messages(
-    thread_id: str, user=Depends(get_current_user), limit: int = Query(50, ge=1, le=200)
-):
-    user_id = resolve_user_id(user)
-    await thread_service.get_thread(user_id, thread_id)  # ownership check (404 otherwise)
-    messages = await message_service.get_recent_messages(
-        user_id=user_id, thread_id=thread_id, limit=limit
+def _thread_public(t: dict) -> ThreadPublic:
+    return ThreadPublic(
+        id=str(t["_id"]),
+        title=t.get("title") or "New thread",
+        created_at=t["created_at"],
+        updated_at=t["updated_at"],
+        message_count=t.get("message_count", 0),
     )
-    return {"messages": [_message_view(m) for m in messages]}
 
 
-@router.get("/{thread_id}/documents")
-async def list_thread_documents(thread_id: str, user=Depends(get_current_user)):
-    user_id = resolve_user_id(user)
-    await thread_service.get_thread(user_id, thread_id)  # ownership check
-    documents = await document_service.list_thread_documents(user_id, thread_id)
-    return {"documents": [_document_view(d) for d in documents]}
+def _message_public(m: dict) -> MessagePublic:
+    return MessagePublic(
+        id=str(m["_id"]),
+        role=m["role"],
+        content=m.get("content", ""),
+        created_at=m["created_at"],
+        citations=m.get("citations", []),
+        tool_badges=m.get("tool_badges", []),
+        run_id=m.get("run_id"),
+    )
+
+
+@router.get("", response_model=list[ThreadPublic])
+async def list_threads(user=Depends(get_current_user)):
+    rows = await thread_service.list_threads(user["id"], limit=100)
+    return [_thread_public(t) for t in rows]
+
+
+@router.post("", response_model=ThreadPublic, status_code=201)
+async def create_thread(payload: ThreadCreateRequest, user=Depends(get_current_user)):
+    t = await thread_service.create_thread(user["id"], payload.title)
+    return _thread_public(t)
+
+
+@router.get("/{thread_id}", response_model=ThreadPublic)
+async def get_thread(thread_id: str, user=Depends(get_current_user)):
+    t = await thread_service.get_thread(user["id"], thread_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    return _thread_public(t)
+
+
+@router.get("/{thread_id}/messages", response_model=list[MessagePublic])
+async def list_messages(
+    thread_id: str,
+    user=Depends(get_current_user),
+    limit: int = Query(200, ge=1, le=500),
+):
+    t = await thread_service.get_thread(user["id"], thread_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    rows = await thread_service.list_messages(user["id"], thread_id, limit=limit)
+    return [_message_public(m) for m in rows]

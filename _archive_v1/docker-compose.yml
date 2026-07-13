@@ -1,0 +1,172 @@
+# Full local stack: infra (mongodb, redis, qdrant, minio) + app (backend,
+# worker, frontend).
+#
+#   docker compose up --build
+#
+# Secrets / overrides come from a repo-root .env (see .env.example). Compose
+# auto-loads it for ${VAR} interpolation AND each app service loads it via
+# env_file; the per-service `environment` block overrides it with the in-cluster
+# service hostnames. This file is for LOCAL/DEMO use — see docker-compose.prod.yml
+# for a production-like composition.
+
+x-app-environment: &app-environment
+  MONGO_URL: mongodb://mongodb:27017
+  DB_NAME: runner_ai_v1
+  REDIS_URL: redis://redis:6379/0
+  QDRANT_URL: http://qdrant:6333
+  QDRANT_COLLECTION: document_chunks
+  MINIO_ENDPOINT: minio:9000
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+  MINIO_BUCKET: ${MINIO_BUCKET:-runner-uploads}
+  MINIO_SECURE: ${MINIO_SECURE:-false}
+  LLM_PROVIDER: ${LLM_PROVIDER:-auto}
+  LLM_MODEL: ${LLM_MODEL:-claude-sonnet-5}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+services:
+  mongodb:
+    image: mongo:7
+    container_name: runner_mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - runner_mongo_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: runner_ai_v1
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: runner_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - runner_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+    container_name: runner_qdrant
+    ports:
+      - "6333:6333"   # REST
+      - "6334:6334"   # gRPC
+    volumes:
+      - runner_qdrant_data:/qdrant/storage
+    # The qdrant image ships no in-container HTTP client, so a compose healthcheck
+    # is not reliable; readiness is verified at runtime via GET /health/ready.
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: runner_minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - runner_minio_data:/data
+    restart: unless-stopped
+
+  # One-shot: create the uploads bucket, then exit.
+  minio-init:
+    image: minio/mc:latest
+    container_name: runner_minio_init
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin}; do sleep 1; done &&
+      mc mb --ignore-existing local/runner-uploads &&
+      echo 'minio bucket ready'"
+    restart: "no"
+
+  backend:
+    build: ./backend
+    image: runner-ai-backend:latest
+    container_name: runner_backend
+    env_file:
+      - path: .env
+        required: false
+    environment: *app-environment
+    ports:
+      - "8000:8000"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      minio:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health/live').status==200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  worker:
+    image: runner-ai-backend:latest
+    container_name: runner_worker
+    command: python -m app.worker
+    env_file:
+      - path: .env
+        required: false
+    environment: *app-environment
+    depends_on:
+      backend:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      minio:
+        condition: service_started
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_BACKEND_URL: ""   # same-origin: nginx proxies /agent to the backend
+    image: runner-ai-frontend:latest
+    container_name: runner_frontend
+    environment:
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  runner_mongo_data:
+  runner_redis_data:
+  runner_qdrant_data:
+  runner_minio_data:

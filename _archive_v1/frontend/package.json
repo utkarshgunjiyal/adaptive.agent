@@ -1,0 +1,39 @@
+{
+  "name": "runner-ai-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Runner.ai V2 web UI — streaming agent runs + human-in-the-loop (Phase 41B).",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.13.0",
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/jest-dom": "^6.5.0",
+    "@testing-library/react": "^16.0.1",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.2",
+    "eslint": "^9.13.0",
+    "eslint-plugin-react-hooks": "^5.0.0",
+    "eslint-plugin-react-refresh": "^0.4.14",
+    "globals": "^15.11.0",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.6.2",
+    "typescript-eslint": "^8.10.0",
+    "vite": "^5.4.8",
+    "vitest": "^2.1.2"
+  }
+}

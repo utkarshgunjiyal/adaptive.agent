@@ -1,172 +1,161 @@
-# Full local stack: infra (mongodb, redis, qdrant, minio) + app (backend,
-# worker, frontend).
+# Runner.ai — full Docker Compose stack.
 #
-#   docker compose up --build
+# Brings up the "production" architecture Runner.ai targets: Postgres,
+# Redis, Qdrant, MinIO, the backend API, a Celery worker for ingestion,
+# and the frontend served by nginx.
 #
-# Secrets / overrides come from a repo-root .env (see .env.example). Compose
-# auto-loads it for ${VAR} interpolation AND each app service loads it via
-# env_file; the per-service `environment` block overrides it with the in-cluster
-# service hostnames. This file is for LOCAL/DEMO use — see docker-compose.prod.yml
-# for a production-like composition.
+# The K8s preview build uses a simplified stack (MongoDB + in-process
+# background tasks + in-memory vector store) and does NOT use this file.
 
-x-app-environment: &app-environment
-  MONGO_URL: mongodb://mongodb:27017
-  DB_NAME: runner_ai_v1
-  REDIS_URL: redis://redis:6379/0
-  QDRANT_URL: http://qdrant:6333
-  QDRANT_COLLECTION: document_chunks
-  MINIO_ENDPOINT: minio:9000
-  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
-  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
-  MINIO_BUCKET: ${MINIO_BUCKET:-runner-uploads}
-  MINIO_SECURE: ${MINIO_SECURE:-false}
-  LLM_PROVIDER: ${LLM_PROVIDER:-auto}
-  LLM_MODEL: ${LLM_MODEL:-claude-sonnet-5}
-  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+version: "3.9"
 
 services:
-  mongodb:
-    image: mongo:7
-    container_name: runner_mongodb
-    ports:
-      - "27017:27017"
-    volumes:
-      - runner_mongo_data:/data/db
-    environment:
-      MONGO_INITDB_DATABASE: runner_ai_v1
-    healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+  postgres:
+    image: postgres:16-alpine
     restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-runner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-runner}
+      POSTGRES_DB: ${POSTGRES_DB:-runner_ai}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-runner}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   redis:
     image: redis:7-alpine
-    container_name: runner_redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
-      - runner_redis_data:/data
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      interval: 5s
       timeout: 3s
-      retries: 5
-    restart: unless-stopped
+      retries: 20
 
   qdrant:
-    image: qdrant/qdrant:v1.12.1
-    container_name: runner_qdrant
-    ports:
-      - "6333:6333"   # REST
-      - "6334:6334"   # gRPC
-    volumes:
-      - runner_qdrant_data:/qdrant/storage
-    # The qdrant image ships no in-container HTTP client, so a compose healthcheck
-    # is not reliable; readiness is verified at runtime via GET /health/ready.
+    image: qdrant/qdrant:v1.12.4
     restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
 
   minio:
-    image: minio/minio:latest
-    container_name: runner_minio
-    command: server /data --console-address ":9001"
-    ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # web console
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-    volumes:
-      - runner_minio_data:/data
+    image: minio/minio:RELEASE.2024-10-29T16-01-48Z
     restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-runneradmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-runnersecret}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
 
-  # One-shot: create the uploads bucket, then exit.
-  minio-init:
-    image: minio/mc:latest
-    container_name: runner_minio_init
+  # Create the bucket on startup.
+  minio_init:
+    image: minio/mc:RELEASE.2024-10-29T15-34-59Z
     depends_on:
       minio:
-        condition: service_started
+        condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-      until mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin}; do sleep 1; done &&
-      mc mb --ignore-existing local/runner-uploads &&
-      echo 'minio bucket ready'"
-    restart: "no"
+      mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY:-runneradmin} ${MINIO_SECRET_KEY:-runnersecret};
+      mc mb --ignore-existing local/${MINIO_BUCKET:-runner-uploads};
+      exit 0;
+      "
 
   backend:
-    build: ./backend
-    image: runner-ai-backend:latest
-    container_name: runner_backend
-    env_file:
-      - path: .env
-        required: false
-    environment: *app-environment
-    ports:
-      - "8000:8000"
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
     depends_on:
-      mongodb:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       qdrant:
         condition: service_started
-      minio:
-        condition: service_started
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health/live').status==200 else 1)"
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    restart: unless-stopped
+      minio_init:
+        condition: service_completed_successfully
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-runner}:${POSTGRES_PASSWORD:-runner}@postgres:5432/${POSTGRES_DB:-runner_ai}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-runner_chunks}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-runneradmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-runnersecret}
+      MINIO_BUCKET: ${MINIO_BUCKET:-runner-uploads}
+      MINIO_SECURE: "false"
+      JWT_SECRET: ${JWT_SECRET}
+      EMERGENT_LLM_KEY: ${EMERGENT_LLM_KEY}
+      TAVILY_API_KEY: ${TAVILY_API_KEY}
+      LLM_MODEL: ${LLM_MODEL:-gpt-5.2}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+    ports:
+      - "8001:8001"
 
   worker:
-    image: runner-ai-backend:latest
-    container_name: runner_worker
-    command: python -m app.worker
-    env_file:
-      - path: .env
-        required: false
-    environment: *app-environment
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["celery", "-A", "app.worker", "worker", "--loglevel=info"]
     depends_on:
-      backend:
-        condition: service_healthy
-      mongodb:
-        condition: service_healthy
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
       qdrant:
         condition: service_started
-      minio:
-        condition: service_started
-    restart: unless-stopped
+      minio_init:
+        condition: service_completed_successfully
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-runner}:${POSTGRES_PASSWORD:-runner}@postgres:5432/${POSTGRES_DB:-runner_ai}
+      CELERY_BROKER_URL: redis://redis:6379/1
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-runner_chunks}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-runneradmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-runnersecret}
+      MINIO_BUCKET: ${MINIO_BUCKET:-runner-uploads}
+      EMERGENT_LLM_KEY: ${EMERGENT_LLM_KEY}
+      LLM_MODEL: ${LLM_MODEL:-gpt-5.2}
 
   frontend:
     build:
       context: ./frontend
-      args:
-        VITE_BACKEND_URL: ""   # same-origin: nginx proxies /agent to the backend
-    image: runner-ai-frontend:latest
-    container_name: runner_frontend
-    environment:
-      BACKEND_URL: http://backend:8000
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - backend
     ports:
       - "3000:80"
-    depends_on:
-      backend:
-        condition: service_healthy
-    restart: unless-stopped
+    environment:
+      REACT_APP_BACKEND_URL: http://localhost:8001
 
 volumes:
-  runner_mongo_data:
-  runner_redis_data:
-  runner_qdrant_data:
-  runner_minio_data:
+  postgres_data:
+  redis_data:
+  qdrant_data:
+  minio_data:

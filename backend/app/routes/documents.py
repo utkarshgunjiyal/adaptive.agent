@@ -1,29 +1,34 @@
-import os
+"""Document upload + list + retry routes.
+
+Files are validated, stored on disk, then a Mongo job is created and enqueued
+onto ``asyncio`` background tasks. In the Docker Compose "production" stack
+the same job payload is pushed onto Redis and consumed by a Celery worker
+(``worker.py``). The API layer is identical either way.
+"""
+
+from __future__ import annotations
+
+import asyncio
 import re
 import uuid
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from bson import ObjectId
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 
+from app.auth import get_current_user
 from app.config import settings
-from app.logging_config import get_logger
-from app.schemas.document import DocumentPublic, DocumentStatus, UploadResponse
-from app.services import (
-    document_service,
-    job_queue_service,
-    job_service,
-    storage_service,
-    thread_service,
-)
+from app.db import get_db
+from app.models import DocumentPublic, DocumentStatus, JobPublic, UploadResponse
+from app.services import ingest, storage
 
-logger = get_logger("documents")
-router = APIRouter(prefix="/documents", tags=["documents"])
+router = APIRouter(prefix="/api", tags=["documents"])
 
-# Single-user placeholder until auth lands (Phase 5); matches chat_service.
-DEV_USER_ID = "dev_user"
+_PDF_MAGIC = b"%PDF-"
 
 
 def _safe_filename(name: str | None) -> str:
-    base = os.path.basename(name or "").strip() or "upload.pdf"
+    base = (name or "").split("/")[-1].split("\\")[-1].strip() or "upload.pdf"
     base = re.sub(r"[^A-Za-z0-9._-]", "_", base)
     return base[:200]
 
@@ -31,9 +36,7 @@ def _safe_filename(name: str | None) -> str:
 def _document_public(doc: dict) -> DocumentPublic:
     return DocumentPublic(
         id=str(doc["_id"]),
-        user_id=doc["user_id"],
         filename=doc["filename"],
-        content_type=doc["content_type"],
         size_bytes=doc["size_bytes"],
         status=doc["status"],
         page_count=doc.get("page_count"),
@@ -45,86 +48,156 @@ def _document_public(doc: dict) -> DocumentPublic:
     )
 
 
-@router.post("/upload", response_model=UploadResponse, status_code=202)
-async def upload_document(
-    file: UploadFile = File(...),
-    thread_id: str | None = Form(default=None),
-) -> UploadResponse:
-    user_id = DEV_USER_ID
-    # Phase 43: a document uploaded into a thread is owned by (user, thread).
-    # Validate ownership before storing anything (404 if the thread isn't the
-    # user's). thread_id is optional for backward compatibility.
-    if thread_id:
-        await thread_service.get_thread(user_id, thread_id)
-    content_type = (file.content_type or "application/octet-stream").split(";")[0].strip()
+def _job_public(job: dict) -> JobPublic:
+    return JobPublic(
+        id=str(job["_id"]),
+        document_id=str(job["document_id"]),
+        status=job["status"],
+        progress=job.get("progress", 0),
+        attempt_count=job.get("attempt_count", 0),
+        error=job.get("error"),
+        created_at=job["created_at"],
+        started_at=job.get("started_at"),
+        completed_at=job.get("completed_at"),
+    )
 
-    if content_type not in settings.allowed_content_types:
-        raise HTTPException(
-            status_code=415,
-            detail=f"Unsupported content type '{content_type}'. "
-            f"Allowed: {settings.allowed_content_types}",
-        )
+
+async def _kick_off_ingest(user_id: str, document_id: str, job_id: str) -> None:
+    """Fire-and-forget background ingestion task."""
+    asyncio.create_task(ingest.ingest_document(
+        user_id=user_id, document_id=document_id, job_id=job_id
+    ))
+
+
+@router.post("/documents/upload", response_model=UploadResponse, status_code=202)
+async def upload_document(
+    background: BackgroundTasks,
+    file: UploadFile = File(...),
+    user=Depends(get_current_user),
+):
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    if content_type != "application/pdf":
+        raise HTTPException(status_code=415, detail="Only application/pdf is supported.")
 
     data = await file.read()
-    size_bytes = len(data)
-    if size_bytes == 0:
-        raise HTTPException(status_code=400, detail="Empty file")
-    if size_bytes > settings.max_upload_bytes:
+    size = len(data)
+    if size == 0:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    if size > settings.max_upload_bytes:
         raise HTTPException(
             status_code=413,
-            detail=f"File too large ({size_bytes} bytes); max {settings.max_upload_bytes}",
+            detail=f"File too large ({size} bytes). Max is {settings.max_upload_bytes}.",
         )
+    if not data.startswith(_PDF_MAGIC):
+        raise HTTPException(status_code=415, detail="File does not look like a valid PDF.")
 
     filename = _safe_filename(file.filename)
-    # Thread-isolated object key (backend-generated; never trusts client keys).
-    thread_segment = thread_id if thread_id else "none"
-    storage_key = f"{user_id}/threads/{thread_segment}/{uuid.uuid4().hex}/{filename}"
+    storage_key = f"{uuid.uuid4().hex}_{filename}"
+    storage.put_object(user["id"], storage_key, data)
 
-    # Store raw bytes first; only then create records + enqueue so a failed
-    # upload never leaves an orphaned job pointing at missing storage. A storage
-    # outage becomes a SAFE, coded error — never a raw stack trace (Phase 44).
-    try:
-        await storage_service.put_object(storage_key, data, content_type)
-    except Exception as exc:  # noqa: BLE001 - map any storage failure to a safe error
-        logger.warning(
-            "document.storage_unavailable",
-            extra={"error_type": type(exc).__name__, "storage_key_prefix": storage_key.split("/")[0]},
-        )
-        raise HTTPException(
-            status_code=503,
-            detail={"error_code": "document_storage_unavailable",
-                    "message": "Document storage is temporarily unavailable. Please try again."},
-        ) from exc
+    db = get_db()
+    now = datetime.now(timezone.utc)
+    doc = {
+        "user_id": user["id"],
+        "filename": filename,
+        "content_type": content_type,
+        "size_bytes": size,
+        "storage_key": storage_key,
+        "status": DocumentStatus.QUEUED,
+        "created_at": now,
+        "updated_at": now,
+        "summary": None,
+        "page_count": None,
+        "chunk_count": None,
+        "error": None,
+    }
+    doc_res = await db.documents.insert_one(doc)
+    document_id = str(doc_res.inserted_id)
 
-    document = await document_service.create_document(
-        user_id=user_id,
-        filename=filename,
-        content_type=content_type,
-        size_bytes=size_bytes,
-        storage_key=storage_key,
-        thread_id=thread_id,
-    )
-    document_id = str(document["_id"])
+    job = {
+        "user_id": user["id"],
+        "document_id": document_id,
+        "status": DocumentStatus.QUEUED,
+        "progress": 0,
+        "attempt_count": 0,
+        "created_at": now,
+        "started_at": None,
+        "completed_at": None,
+        "error": None,
+    }
+    job_res = await db.jobs.insert_one(job)
+    job_id = str(job_res.inserted_id)
 
-    job = await job_service.create_job(user_id=user_id, document_id=document_id)
-    job_id = str(job["_id"])
+    background.add_task(_kick_off_ingest, user["id"], document_id, job_id)
 
-    await job_queue_service.enqueue_job(job_id)
-
-    logger.info(
-        "document.uploaded",
-        extra={"document_id": document_id, "job_id": job_id, "size_bytes": size_bytes},
-    )
     return UploadResponse(
-        document_id=document_id,
-        job_id=job_id,
-        status=DocumentStatus.PENDING,
+        document_id=document_id, job_id=job_id, status=DocumentStatus.QUEUED
     )
 
 
-@router.get("/{document_id}", response_model=DocumentPublic)
-async def get_document_status(document_id: str) -> DocumentPublic:
-    doc = await document_service.get_document(document_id, user_id=DEV_USER_ID)
+@router.get("/documents", response_model=list[DocumentPublic])
+async def list_documents(user=Depends(get_current_user)):
+    db = get_db()
+    cursor = db.documents.find({"user_id": user["id"]}).sort("created_at", -1)
+    return [_document_public(d) async for d in cursor]
+
+
+@router.get("/documents/{document_id}", response_model=DocumentPublic)
+async def get_document(document_id: str, user=Depends(get_current_user)):
+    db = get_db()
+    try:
+        doc = await db.documents.find_one({"_id": ObjectId(document_id), "user_id": user["id"]})
+    except Exception:  # noqa: BLE001
+        doc = None
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     return _document_public(doc)
+
+
+@router.post("/documents/{document_id}/retry", status_code=202)
+async def retry_document(
+    document_id: str, background: BackgroundTasks, user=Depends(get_current_user)
+):
+    db = get_db()
+    try:
+        doc = await db.documents.find_one({"_id": ObjectId(document_id), "user_id": user["id"]})
+    except Exception:  # noqa: BLE001
+        doc = None
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if doc["status"] not in {DocumentStatus.FAILED, DocumentStatus.READY}:
+        raise HTTPException(status_code=409, detail="Document is already being processed.")
+
+    now = datetime.now(timezone.utc)
+    job = {
+        "user_id": user["id"],
+        "document_id": document_id,
+        "status": DocumentStatus.QUEUED,
+        "progress": 0,
+        "attempt_count": 0,
+        "created_at": now,
+        "started_at": None,
+        "completed_at": None,
+        "error": None,
+    }
+    job_res = await db.jobs.insert_one(job)
+    job_id = str(job_res.inserted_id)
+
+    await db.documents.update_one(
+        {"_id": doc["_id"]},
+        {"$set": {"status": DocumentStatus.QUEUED, "error": None, "updated_at": now}},
+    )
+    background.add_task(_kick_off_ingest, user["id"], document_id, job_id)
+    return {"job_id": job_id, "document_id": document_id}
+
+
+@router.get("/jobs/{job_id}", response_model=JobPublic)
+async def get_job(job_id: str, user=Depends(get_current_user)):
+    db = get_db()
+    try:
+        job = await db.jobs.find_one({"_id": ObjectId(job_id), "user_id": user["id"]})
+    except Exception:  # noqa: BLE001
+        job = None
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return _job_public(job)

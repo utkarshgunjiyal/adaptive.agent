@@ -1,201 +1,193 @@
 # Runner.ai
 
-A context-aware, document-aware AI assistant. Runner.ai routes each user
-request through a deterministic intent classifier, selects a retrieval policy
-for that intent, assembles priority-ordered evidence (recent messages, thread
-summaries, long-term memory, and document chunks/summaries), enforces a context
-budget, and generates a grounded answer — synchronously or streamed token-by-token.
+A private AI research and knowledge platform. Sign in, upload PDFs, and chat with an autonomous agent that decides — under strict backend control — which tools to use: your private documents, the current web, or academic literature. Every answer is grounded in retrieved evidence with clickable citations.
 
-> **Status:** V1.5. Document ingestion, semantic retrieval, real LLM answers,
-> long-term memory, and SSE streaming are implemented and runnable via Docker
-> Compose (see [Deployment](#deployment-docker-compose)).
+> **Status:** V1.0 (Phases 1–4). Auth · PDF ingestion · document retrieval · web + arXiv search · streamed grounded chat · execution-details drawer. Phases 5–6 (structured planner refinements, MCP adapter, approvals UI, hybrid retrieval) are next.
 
 ---
 
-## Architecture
+## Stack
 
-```
-POST /chat/ask  |  POST /chat/stream
-  → thread + summary bootstrap        (thread_service, thread_summary_service)
-  → atomic seq allocation + persist   (thread_service, message_service)
-  → intent classification             (behavior_router  → RequestPlan)
-  → deterministic preference capture  (preference_service)      [on "remember that…"]
-  → retrieval policy selection        (context_policy_service → ContextPolicy)
-  → memory retrieval                  (memory_retrieval_service → MemoryContext)
-      recent messages · thread summary · user preferences · knowledge
-      · document summary · page · chunks (Qdrant semantic search)
-  → priority-ordered assembly + budget (context_composer)
-  → answer generation                 (llm_provider → llm_client)  [sync or streamed]
-  → persist answer + maybe summarize  (thread_summary_service)
-```
-
-**Document ingestion** runs asynchronously off the request path:
-
-```
-POST /documents/upload → validate → MinIO → Mongo document + job → Redis
-  → worker: extract (pypdf) → chunk → embed → Qdrant → summary → status
-```
-
-The design is **schema-driven**: `RequestPlan`, `ContextPolicy`,
-`ContextEvidence`, and `MemoryContext` (`backend/app/schemas/`) form the stable
-contract every service reads and writes, so new evidence sources plug in
-without reshaping the pipeline.
-
-### Tech stack
-
-| Concern          | Technology                          |
-| ---------------- | ----------------------------------- |
-| API              | FastAPI (async) + Uvicorn           |
-| Data store       | MongoDB (Motor)                     |
-| Job queue        | Redis                               |
-| Object storage   | MinIO                               |
-| Vector store     | Qdrant                              |
-| LLM              | Anthropic / OpenRouter (httpx)      |
-| Config           | Pydantic Settings                   |
+| Layer                 | Preview (this repo runs as-is) | Docker Compose "production"      |
+| --------------------- | ------------------------------ | -------------------------------- |
+| API                   | FastAPI + uvicorn              | FastAPI + uvicorn                |
+| DB                    | **MongoDB (Motor)**            | **PostgreSQL** + Redis           |
+| Vector store          | Mongo `chunks` collection + cosine | **Qdrant**                    |
+| Object storage        | Local disk (`STORAGE_DIR`)     | **MinIO**                        |
+| Background workers    | `asyncio.create_task`          | **Celery + Redis**               |
+| LLM                   | gpt-5.2 via Emergent Universal LLM key | same                     |
+| Frontend              | React (CRA) + Tailwind         | same, served by nginx            |
 
 ---
 
-## Deployment (Docker Compose)
+## Preview architecture
 
-Brings up the full stack: `mongodb`, `redis`, `qdrant`, `minio`, `backend`
-(API), and `worker` (ingestion). The backend and worker share one image.
-
-```bash
-# 1. (optional) provide an LLM key — without one the app runs with a stub provider
-cp .env.example .env          # then set ANTHROPIC_API_KEY=... (or OPENROUTER_API_KEY)
-
-# 2. build + start everything
-docker compose up --build     # add -d to run detached
-
-# 3. verify
-curl http://localhost:8000/health          # {"status":"healthy", ...}
-docker compose ps                           # mongodb/redis healthy; backend healthy
+```
+POST /api/agent/run/stream
+    ├─ persist user message
+    ├─ deterministic capability selection      (services/agent.select_tools)
+    ├─ LLM planner → AgentPlan (JSON schema)   (services/agent.plan)
+    ├─ policy validation                       (services/agent.validate_plan)
+    ├─ executor · parallel + dependencies      (services/agent.execute_plan)
+    │      ├─ search_document_chunks (Mongo cosine)
+    │      ├─ get_document_summary
+    │      ├─ list_user_documents
+    │      ├─ web_search (Tavily)
+    │      └─ paper_search (arXiv)
+    ├─ evidence normalisation → EvidenceItem[]
+    ├─ synthesizer prompt with [n]-citation rules
+    └─ SSE stream · run_started · plan_ready · tool_call · answer_delta · run_completed
 ```
 
-Services & ports: API `:8000` (docs at `/docs`), Mongo `:27017`, Redis `:6379`,
-Qdrant `:6333`, MinIO API `:9000` / console `:9001` (`minioadmin`/`minioadmin`).
+**Document ingestion** is asynchronous and runs off the request path:
 
-**Health checks:** `mongodb` (mongosh ping), `redis` (redis-cli ping), and
-`backend` (HTTP `/health`) report health to Compose; `backend` waits for Mongo
-to be healthy and the `worker` waits on Mongo/Redis before starting. Qdrant and
-MinIO use start-ordering plus a worker boot-retry (`_init_infra`) so a
-slightly-late dependency self-heals rather than crash-loops. Everything is
-`restart: unless-stopped`.
-
-```bash
-docker compose logs -f worker     # watch ingestion jobs
-docker compose down               # stop (add -v to wipe volumes)
+```
+POST /api/documents/upload
+    → validate (magic bytes + size + type)
+    → store on disk (per-user)
+    → create Mongo document + job (status: queued)
+    → asyncio.create_task(ingest_document)  # replaced by Celery in Docker mode
+        → pypdf extract text page-by-page
+        → chunk (1200 chars, 180 overlap)
+        → embed (hashed n-gram) + upsert to Mongo `chunks`
+        → gpt-5.2 summary
+        → mark document ready
 ```
 
 ---
 
-## Local development (without Docker for the app)
+## Quick start (preview / this repo)
+
+The preview container comes with all dependencies pre-installed. Backend and frontend are supervised.
 
 ```bash
-cp .env.example .env                     # localhost URLs are correct for host runs
-docker compose up -d mongodb redis qdrant minio   # infra only
+sudo supervisorctl status
+# backend    RUNNING
+# frontend   RUNNING
+# mongodb    RUNNING
 
-cd backend
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-
-uvicorn app.main:app --reload            # terminal 1 — API
-python -m app.worker                     # terminal 2 — worker
+# Open the public URL → /register → workspace.
 ```
+
+### Environment (`/app/backend/.env`)
+
+| Var                | Purpose                                       |
+| ------------------ | --------------------------------------------- |
+| `MONGO_URL`        | MongoDB connection string                     |
+| `DB_NAME`          | Database name (`runner_ai`)                   |
+| `JWT_SECRET`       | 64-char random hex                            |
+| `EMERGENT_LLM_KEY` | Emergent Universal LLM key (gpt-5.2)          |
+| `TAVILY_API_KEY`   | Tavily web-search key (optional; tool marked unavailable if empty) |
+| `MAX_UPLOAD_BYTES` | Ingest size cap (default 25 MB)               |
+| `MAX_PAGES`        | Ingest page cap (default 200)                 |
+
+### Environment (`/app/frontend/.env`)
+
+| Var                    | Purpose                                          |
+| ---------------------- | ------------------------------------------------ |
+| `REACT_APP_BACKEND_URL`| Public backend URL (used by `axios` + SSE fetch) |
+
+---
+
+## Quick start (Docker Compose)
+
+Runs the full spec: Postgres, Redis, Qdrant, MinIO, backend, Celery worker, and nginx-served frontend.
+
+```bash
+cp .env.example .env
+# Set JWT_SECRET and EMERGENT_LLM_KEY (and TAVILY_API_KEY if you want real web search).
+docker compose up --build -d
+
+# Health checks
+curl http://localhost:8001/api/health
+curl http://localhost:8001/api/ready
+# UI
+open http://localhost:3000
+```
+
+**NOTE:** the Docker stack image is a superset: the API image installs asyncpg/SQLAlchemy/celery/qdrant-client/minio in addition to the preview build's minimal deps. The preview and Docker builds share the same `server.py` entry point.
+
+---
+
+## Tool registry
+
+| id                        | kind     | risk | badge          | description                                     |
+| ------------------------- | -------- | ---- | -------------- | ----------------------------------------------- |
+| `search_document_chunks`  | internal | read | private_doc    | Semantic search across the user's PDFs         |
+| `get_document_summary`    | internal | read | private_doc    | Return the cached per-doc summary              |
+| `list_user_documents`     | internal | read | context        | List available documents + statuses            |
+| `web_search`              | api      | read | web_source     | Tavily web search (marked unavailable if no key)|
+| `paper_search`            | api      | read | research_paper | arXiv paper search                              |
+
+The registry lives in `backend/app/tools/registry.py`. Each tool exposes an executor callable and reports `available` based on config — a missing `TAVILY_API_KEY` makes `web_search` show as *unavailable* to the planner rather than fake success.
 
 ---
 
 ## API reference
 
-| Method | Path                    | Purpose                                        |
-| ------ | ----------------------- | ---------------------------------------------- |
-| GET    | `/health`               | Liveness + Mongo connectivity                  |
-| POST   | `/chat/ask`             | Ask a question → `{thread_id, answer}`         |
-| POST   | `/chat/stream`          | Same, streamed as Server-Sent Events           |
-| POST   | `/documents/upload`     | Upload a PDF (multipart) → `{document_id, job_id}` |
-| GET    | `/documents/{id}`       | Document status + summary                       |
-| GET    | `/jobs/{id}`            | Ingestion job status                            |
-| GET    | `/memory/preferences`   | List captured user preferences                  |
-| GET    | `/memory/knowledge`     | List knowledge entries                          |
-| POST   | `/memory/knowledge`     | Add a knowledge fact                            |
-
-`/chat/*` accept `{"question": str, "thread_id"?: str, "document_id"?: str}`.
-
----
-
-## End-to-end test
-
-```bash
-# 1. upload a PDF and wait for it to finish ingesting
-curl -s -X POST localhost:8000/documents/upload -F 'file=@handbook.pdf'   # -> {document_id, job_id}
-curl -s localhost:8000/documents/<document_id>                            # status: completed
-
-# 2. ask about it (grounded in retrieved chunks)
-curl -s -X POST localhost:8000/chat/ask -H 'Content-Type: application/json' \
-  -d '{"question":"What does the document say about X?","document_id":"<document_id>"}'
-
-# 3. stream an answer (SSE: status events, then tokens, then final)
-curl -N -X POST localhost:8000/chat/stream -H 'Content-Type: application/json' \
-  -d '{"question":"summarize page 2","document_id":"<document_id>"}'
-
-# 4. long-term memory
-curl -s -X POST localhost:8000/chat/ask -H 'Content-Type: application/json' \
-  -d '{"question":"Remember that I prefer concise answers"}'
-curl -s localhost:8000/memory/preferences
-```
-
-> With no LLM key set, answers come from a deterministic **stub** provider so the
-> pipeline is fully exercisable offline; set `ANTHROPIC_API_KEY` (or
-> `OPENROUTER_API_KEY`) for real generation.
+| Method | Path                                | Purpose                                     |
+| ------ | ----------------------------------- | ------------------------------------------- |
+| POST   | `/api/auth/register`                | Create a new user                           |
+| POST   | `/api/auth/login`                   | Sign in → JWT                               |
+| POST   | `/api/auth/logout`                  | Stateless (client discards token)           |
+| GET    | `/api/auth/me`                      | Current user profile                        |
+| GET    | `/api/threads`                      | List user's threads                         |
+| POST   | `/api/threads`                      | Create thread                               |
+| GET    | `/api/threads/{id}`                 | Thread metadata                             |
+| GET    | `/api/threads/{id}/messages`        | Message history                             |
+| POST   | `/api/documents/upload`             | Upload PDF (multipart) → job                |
+| GET    | `/api/documents`                    | List user's documents                       |
+| GET    | `/api/documents/{id}`               | Document status + summary                   |
+| POST   | `/api/documents/{id}/retry`         | Retry failed ingestion                      |
+| GET    | `/api/jobs/{id}`                    | Ingestion job status                        |
+| POST   | `/api/agent/run/stream`             | SSE agent run (planner + tools + synth)     |
+| GET    | `/api/agent/runs/{id}`              | Full run trace (plan · tool calls · evidence) |
+| POST   | `/api/agent/runs/{id}/approve`      | Approve a paused write/sensitive step       |
+| POST   | `/api/agent/runs/{id}/reject`       | Reject a paused step                        |
+| GET    | `/api/tools`                        | Public view of the tool registry            |
+| GET    | `/api/health`                       | Liveness                                    |
+| GET    | `/api/ready`                        | Deep readiness (Mongo ping)                 |
 
 ---
 
-## Configuration
-
-All settings load from environment variables / `.env` via Pydantic Settings
-(`backend/app/config.py`). See [`.env.example`](.env.example). Required:
-`MONGO_URL`. Key LLM knobs: `LLM_PROVIDER` (`auto`/`anthropic`/`openrouter`/`stub`),
-`LLM_MODEL`, `ANTHROPIC_API_KEY` / `OPENROUTER_API_KEY`.
-
-## Observability
-
-Logs are structured JSON on stdout. Every request gets a correlation
-`request_id` (returned as the `X-Request-ID` response header and attached to
-every log line for that request); clients may supply their own via the
-`X-Request-ID` request header.
-
----
-
-## Project structure
+## Example prompts
 
 ```
-backend/
-  Dockerfile             # shared image for API + worker
-  app/
-    main.py              # bootstrap: lifespan, CORS, request-id middleware
-    config.py            # Pydantic Settings
-    database.py          # Mongo client, collections, index setup
-    logging_config.py    # structured JSON logging + request-id context
-    worker.py            # Redis-driven ingestion worker
-    routes/              # health, chat, documents, jobs, memory
-    schemas/             # RequestPlan, ContextPolicy, ContextEvidence, MemoryContext, …
-    services/            # routing, policy, retrieval, composition, LLM, ingestion,
-                         #   storage, vectors, embeddings, preferences, knowledge, …
-docker-compose.yml       # full stack: infra + backend + worker
+"Summarize my uploaded architecture document."
+"What does page 2 say about the executor?"
+"Find recent arxiv papers about agentic RAG."
+"Compare my uploaded RAG design with recent research."
+"What is current news on MCP?"
 ```
 
 ---
 
-## Roadmap
+## Safety / grounding contract
 
-- **Phase 0 — Production cleanup** ✅ config, logging, request IDs, CORS, indexes
-- **Phase 1 — Document pipeline** ✅ upload → MinIO → Redis → worker → extract → chunk → embed → Qdrant → summary
-- **Phase 2 — Retrieval** ✅ Qdrant semantic search, document/page/chunk retrieval wired into the memory pipeline
-- **Phase 3 — Real LLM** ✅ Anthropic/OpenRouter client with timeouts + retries; LLM thread summaries
-- **Phase 4 — Memory** ✅ user preferences, knowledge memory, context-budget enforcement
-- **Phase 5 — Streaming** ✅ Server-Sent Events (status events + token streaming)
-- **Phase 6 — Deployment** ✅ full Docker Compose (Mongo, Redis, Qdrant, MinIO, backend, worker) + health checks
+* Read-only tools run automatically. Write / sensitive tools (none shipped by default) require explicit user approval (`/agent/runs/{id}/approve`).
+* The synthesizer prompt forbids answering from general knowledge when evidence is empty — it says so instead. This is enforced by policy in the system prompt; runs where every tool fails produce an honest "no evidence was retrieved" answer.
+* All secrets are redacted from persisted logs and never returned to the frontend.
+* Per-user rate limiting (auth + agent) is applied by an in-memory sliding-window limiter; swap in Redis for multi-worker.
 
-**Deferred (post-V1.5):** hybrid/BM25 + re-ranking, per-section summaries,
-automatic knowledge extraction, HITL preference confirmation, auth &
-multi-tenancy (replacing the `dev_user` placeholder), and a frontend.
+---
+
+## Frontend
+
+The workspace is a three-column layout:
+
+* **Left rail** — brand · New conversation · Threads / Documents tabs · user footer w/ logout
+* **Middle** — sticky header (thread title + Execution toggle) · streamed chat · scoped-doc composer
+* **Right drawer** — Execution details: capabilities selected · plan · tool calls · evidence · event stream · duration
+
+Every interactive element has a `data-testid` (see `data-testid` audit in the codebase; used by the testing agent).
+
+---
+
+## What's next
+
+Phase 5–6:
+- Structured JSON-schema planner output
+- Approval UI + one demo write tool (`save_user_preference`)
+- Generic MCP adapter (register any read-only MCP server at boot)
+- Hybrid retrieval (BM25 + dense) + reranking
+- Pytest + Playwright test suite

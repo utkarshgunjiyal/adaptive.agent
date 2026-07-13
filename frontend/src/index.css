@@ -1,0 +1,119 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  background: #0B0B0C;
+  color: #F5F2EC;
+  font-family: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* Subtle grain texture for premium feel */
+.grain {
+  position: relative;
+}
+.grain::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  background-size: 200px 200px;
+}
+
+/* Sharp, technical scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a2a2f;
+  border: 2px solid #0B0B0C;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a3a41;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Focus ring — sharp technical */
+:focus-visible {
+  outline: 1px solid #F5F2EC;
+  outline-offset: 2px;
+}
+
+/* Blinking terminal cursor */
+.terminal-caret {
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  background: currentColor;
+  vertical-align: text-bottom;
+  animation: blink 1s step-end infinite;
+  margin-left: 2px;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-feature-settings: 'ss01', 'ss02';
+}
+
+/* Auth page hero band */
+.auth-hero {
+  background:
+    radial-gradient(1200px 400px at 15% -10%, rgba(245, 242, 236, 0.06), transparent 60%),
+    radial-gradient(800px 300px at 100% 100%, rgba(245, 242, 236, 0.04), transparent 60%),
+    #0B0B0C;
+}
+
+/* Streaming answer prose spacing */
+.answer-prose p {
+  margin: 0 0 0.75em 0;
+}
+.answer-prose p:last-child {
+  margin-bottom: 0;
+}
+.answer-prose strong {
+  color: #F5F2EC;
+  font-weight: 600;
+}
+.answer-prose code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.9em;
+  background: #1D1D20;
+  padding: 1px 5px;
+  border: 1px solid #26262A;
+}
+.answer-prose ul,
+.answer-prose ol {
+  margin: 0 0 0.75em 1.4em;
+}
+.answer-prose li {
+  margin-bottom: 4px;
+}

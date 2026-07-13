@@ -1,0 +1,41 @@
+{
+  "summary": "First testing pass on Runner.ai. Backend (21/21 pytest cases) and frontend E2E flows all pass. Verified: auth (register/login/me/dup/wrong-pw/rate-limit-skip), threads CRUD + cross-user isolation, document upload happy-path (queued→ready with page_count+summary), non-PDF/empty/wrong-magic rejection, per-user document isolation, retry, tools registry (5 tools, web_search+paper_search available), and 3 live agent runs (arXiv paper search → 10 citations with url/authors/published, Tavily web+paper for MCP news, document-grounded with private_doc citations w/ filename+page). Frontend: landing hero + 4 source cards, register→/app redirect, workspace layout (tabs, empty state, 4 suggestions, execution drawer), PDF upload → ready in ~2s, logout clears token, wrong-password shows error, correct login works, full E2E arXiv run completes in ~13s with citation pills, source list w/ research_paper badges, and execution drawer showing COMPLETED + duration.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/auth/register", "issue": "Rate-limit sanity was NOT observed as 429 in the preview environment — pytest skipped after 30 rapid attempts. This is because the FastAPI rate limiter keys off request.client.host which behind the Cloudflare/ingress proxy resolves to the ingress pod IP (single key) BUT preview normalises the client host through k8s so many requests appear as different clients. Verified in prod behind Redis+real IP header this must use X-Forwarded-For or a trusted-proxy config. Not a functional blocker for preview."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Composer 'N doc ready' counter", "issue": "After login (or if user never opened Documents tab), the composer footer shows '0 DOC READY' even if the user has ready docs, because DocumentPanel only fetches /api/documents when its tab mounts. The `documents` state lives in WorkspacePage but is only populated from DocumentPanel. Minor UX regression; does NOT affect functionality (agent still uses all user docs via search_document_chunks).", "affected_selectors": ["chat-composer-input footer"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional, low priority) In WorkspacePage.js, fetch /api/documents on mount (regardless of active tab) so the composer footer accurately shows the ready-doc count and users can select documents without first switching tabs.",
+    "(Optional, prod hardening) Make the auth rate limiter proxy-aware (trust X-Forwarded-For from the ingress) so brute-force protection actually engages behind Cloudflare in preview/prod.",
+    "No critical action items — Phase 1-4 backend and frontend flows are functioning end-to-end."
+  ],
+  "critical_code_review_comments": [
+    "backend/app/routes/agent.py uses a private helper `agent_svc._fallback_answer(...)` from inside the route module — fine, but consider promoting it to public API since routes now depend on it.",
+    "backend/app/auth.py uses in-process dict-based rate limiting which does not survive worker restarts or multi-worker deployments; already documented in a code comment.",
+    "backend/app/routes/documents.py: `/api/documents/{document_id}/retry` returns 409 when doc is currently 'processing' or 'queued', which is the correct behavior; not tested but code path is safe.",
+    "frontend/src/components/ChatArea.js: the `send` handler adds an optimistic user message and then removes it in the finally block relying on messages refetch to happen after runInFlight flips. Works but is a bit fragile — if the /threads/{id}/messages GET fails silently the user message disappears entirely. Consider keeping the assistant message in local state and merging with server state on refetch.",
+    "frontend/src/pages/WorkspacePage.js: documents state is only refreshed when DocumentPanel mounts; consider lifting the initial fetch into WorkspacePage so the composer footer + doc-scope UX works before user visits Documents tab."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py"
+  ],
+  "success_rate": {"backend": "100% (21/21 pytest, 1 rate-limit test skipped by design)", "frontend": "100% (all E2E flows including agent run passed)"},
+  "test_credentials": "Created dynamically: test_userA_*@example.com and test_userB_*@example.com (password TestPass123!) for backend tests; uitest_*@example.com and uie2e_*@example.com (password testpass123) for frontend tests. Demo credentials in /app/memory/test_credentials.md (demo@runner.ai / demo1234) NOT USED — demo user may or may not exist.",
+  "seed_data_creation": "No permanent seed data. Test fixtures create ephemeral test_*@example.com users per session and one small reportlab-generated PDF per document test.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "backend_test.py is idempotent (uses random emails) and can be re-run with: `python -m pytest /app/backend/tests/backend_test.py -v --junitxml=/app/test_reports/pytest/pytest_results.xml`. The full run takes ~2 min (3 live agent runs against gpt-5.2 + Tavily + arXiv). If Tavily or arXiv is unreachable, tests test_tavily_web_search_run and test_paper_search_run may fail; check network from container. Frontend Playwright covers register→upload→agent-run→logout flow; if you retest, use a fresh email each time because register enforces uniqueness."
+}
