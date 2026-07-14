@@ -212,6 +212,72 @@ export async function streamAdaptiveRun({ threadId, message, documentIds, onEven
   }
 }
 
+// ---- Adaptive approve/reject ----
+export async function approveAdaptive(runId, decisions = null) {
+  const token = loadToken();
+  const body = decisions ? { decisions } : {};
+  const resp = await fetch(`${API_BASE}/agent/runs/${runId}/adaptive/approve`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw new Error(`Approve failed (${resp.status}): ${await resp.text()}`);
+  return resp;
+}
+
+export async function rejectAdaptive(runId) {
+  const token = loadToken();
+  const resp = await fetch(`${API_BASE}/agent/runs/${runId}/adaptive/reject`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({}),
+  });
+  if (!resp.ok) throw new Error(`Reject failed (${resp.status}): ${await resp.text()}`);
+  return resp;
+}
+
+/**
+ * Approve an adaptive run and consume the resulting SSE stream.
+ * Emits the same event shapes as streamAdaptiveRun.
+ */
+export async function streamAdaptiveApprove({ runId, decisions, onEvent }) {
+  const resp = await approveAdaptive(runId, decisions);
+  await _consumeSse(resp, onEvent);
+}
+
+export async function streamAdaptiveReject({ runId, onEvent }) {
+  const resp = await rejectAdaptive(runId);
+  await _consumeSse(resp, onEvent);
+}
+
+async function _consumeSse(resp, onEvent) {
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buffer.indexOf('\n\n')) !== -1) {
+      const raw = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      const frame = parseFrame(raw);
+      if (frame) onEvent(frame);
+    }
+  }
+  if (buffer.trim()) {
+    const frame = parseFrame(buffer);
+    if (frame) onEvent(frame);
+  }
+}
+
 /**
  * Stream an agent run from POST /api/agent/run/stream using fetch (SSE
  * over a POST body — the browser EventSource API doesn't support POST).

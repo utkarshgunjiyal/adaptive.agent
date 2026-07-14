@@ -1,24 +1,13 @@
-"""Adaptive graph state.
-
-The state is a plain dict compatible with LangGraph's ``StateGraph``.
-Reducers append to lists so parallel tool calls in one round don't stomp
-each other.
-
-Message shape (OpenAI-compatible, provider-neutral):
-
-    {"role": "system"|"user"|"assistant"|"tool",
-     "content": str,
-     "tool_calls": [                # only on role=assistant
-        {"id": str, "type": "function",
-         "function": {"name": str, "arguments": str}},
-     ],
-     "tool_call_id": str}          # only on role=tool
-"""
+"""Adaptive graph state."""
 
 from __future__ import annotations
 
 import operator
 from typing import Annotated, Any, TypedDict
+
+
+def _replace(a: Any, b: Any) -> Any:  # simple replace reducer
+    return b if b is not None else a
 
 
 class AdaptiveState(TypedDict, total=False):
@@ -39,8 +28,14 @@ class AdaptiveState(TypedDict, total=False):
     observations: Annotated[list[dict[str, Any]], operator.add]
     evidence: Annotated[list[dict[str, Any]], operator.add]
 
-    # --- audit trail for the run record (append-only) ---
+    # --- audit trail (append-only) ---
     tool_calls_log: Annotated[list[dict[str, Any]], operator.add]
+    call_fingerprints: Annotated[list[str], operator.add]
+
+    # --- capability state (replace) ---
+    bound_tools: set[str]
+    reselection_count: int
+    reselection_events: Annotated[list[dict[str, Any]], operator.add]
 
     # --- loop controls ---
     iterations: int

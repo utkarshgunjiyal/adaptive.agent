@@ -1,15 +1,12 @@
 """Graph builder and public runtime.
 
-Builds a small LangGraph state graph:
-
-    START -> load_context -> agent -> route
-    route:
-       - tool_calls present AND under limits -> tools -> agent
-       - no tool_calls OR limits hit           -> finalize -> END
-
-The graph runs with the MongoDB checkpointer so HITL interrupts (Phase 3)
-survive restarts. Even in Phase 1 the checkpointer is wired so runs are
-durably resumable.
+    START
+      -> load_context
+      -> select_capabilities
+      -> agent  <----------------------------------------\
+      -> route:                                          |
+           tool_calls -> policy_check -> maybe_reselect -/
+           final     -> finalize -> END
 """
 
 from __future__ import annotations
@@ -21,7 +18,14 @@ from langgraph.checkpoint.mongodb.aio import AsyncMongoDBSaver
 from langgraph.graph import END, START, StateGraph
 
 from app.adaptive.config import adaptive
-from app.adaptive.nodes import agent, finalize, load_context, tools
+from app.adaptive.nodes import (
+    agent,
+    finalize,
+    load_context,
+    maybe_reselect,
+    policy_check,
+    select_capabilities,
+)
 from app.adaptive.state import AdaptiveState
 from app.config import settings
 
@@ -32,7 +36,6 @@ _CHECKPOINT_DB_NAME = "runner_ai_langgraph"
 
 
 def _route_after_agent(state: AdaptiveState) -> str:
-    """Conditional edge decider."""
     msgs = state.get("messages") or []
     last = msgs[-1] if msgs else None
     has_calls = bool(last and last.get("role") == "assistant" and last.get("tool_calls"))
@@ -41,37 +44,41 @@ def _route_after_agent(state: AdaptiveState) -> str:
         return "finalize"
 
     if state.get("iterations", 0) >= adaptive.max_iterations:
-        log.info("adaptive: iteration cap hit; forcing finalize")
+        log.info("adaptive: iteration cap; forcing finalize")
         return "finalize"
     if state.get("tool_call_count", 0) >= adaptive.max_tool_calls_total:
-        log.info("adaptive: total tool-call cap hit; forcing finalize")
+        log.info("adaptive: total tool-call cap; forcing finalize")
         return "finalize"
 
-    return "tools"
+    return "policy_check"
 
 
 def build_graph(*, checkpointer: Any | None = None):
     g = StateGraph(AdaptiveState)
     g.add_node("load_context", load_context)
+    g.add_node("select_capabilities", select_capabilities)
     g.add_node("agent", agent)
-    g.add_node("tools", tools)
+    g.add_node("policy_check", policy_check)
+    g.add_node("maybe_reselect", maybe_reselect)
     g.add_node("finalize", finalize)
 
     g.add_edge(START, "load_context")
-    g.add_edge("load_context", "agent")
+    g.add_edge("load_context", "select_capabilities")
+    g.add_edge("select_capabilities", "agent")
     g.add_conditional_edges(
         "agent",
         _route_after_agent,
-        {"tools": "tools", "finalize": "finalize"},
+        {"policy_check": "policy_check", "finalize": "finalize"},
     )
-    g.add_edge("tools", "agent")
+    g.add_edge("policy_check", "maybe_reselect")
+    g.add_edge("maybe_reselect", "agent")
     g.add_edge("finalize", END)
 
     return g.compile(checkpointer=checkpointer)
 
 
 # --------------------------------------------------------------------------
-# Runtime facade with a Mongo checkpointer over the existing Mongo cluster
+# Runtime facade — MongoDB checkpointer
 # --------------------------------------------------------------------------
 
 _saver: AsyncMongoDBSaver | None = None
@@ -79,13 +86,6 @@ _saver_ctx = None
 
 
 async def get_saver() -> AsyncMongoDBSaver:
-    """Initialise (once) the official MongoDB checkpointer.
-
-    The saver manages its own checkpoint collections and indexes; we only
-    need to give it the connection string + a database name. We use a
-    dedicated ``runner_ai_langgraph`` database on the existing cluster so
-    application collections stay untouched.
-    """
     global _saver, _saver_ctx
     if _saver is None:
         _saver_ctx = AsyncMongoDBSaver.from_conn_string(

@@ -1,15 +1,13 @@
 """Safe tool executor for the adaptive runtime.
 
-Responsibilities (per problem statement):
+Responsibilities:
  - detect timeout / exception / malformed result inside the executor,
    never inside the LLM;
- - convert every outcome to a normalized ToolObservation with an explicit
-   status and tool_call_id;
- - transparently redact secrets from tool arguments in the run record.
-
-Phase 1 keeps retries at zero to avoid masking issues while we prove the
-answer path. Phase 2 will add bounded retries for transient
-read-only failures and a per-provider circuit breaker.
+ - bounded read-only retries with exponential backoff for retryable
+   transient failures;
+ - convert every outcome to a normalized ToolObservation with an
+   explicit status and tool_call_id;
+ - transparently redact secrets from tool arguments in the audit log.
 """
 
 from __future__ import annotations
@@ -46,6 +44,24 @@ def _redact_args(args: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _is_transient(raw: dict[str, Any] | None, exc: BaseException | None) -> bool:
+    """Decide whether a failure warrants a retry."""
+    if isinstance(exc, asyncio.TimeoutError):
+        return True
+    if exc is not None:
+        s = f"{type(exc).__name__}: {exc}".lower()
+        return any(k in s for k in
+                   ("timeout", "temporarily", "connection", "reset",
+                    "readtimeout", "connecttimeout", "eof", "httpx.remote",
+                    "503", "502", "504", "429"))
+    if raw and raw.get("error"):
+        msg = str(raw.get("summary") or "").lower()
+        return any(k in msg for k in
+                   ("timeout", "temporarily", "connection", "reset",
+                    "http 5", "429"))
+    return False
+
+
 async def execute_tool(
     *,
     tool_name: str,
@@ -54,59 +70,78 @@ async def execute_tool(
     user_id: str,
 ) -> ToolObservation:
     """Execute one tool call end-to-end. Never raises: all outcomes are
-    a ToolObservation."""
+    a ToolObservation. Applies bounded retries when the executor was
+    marked retryable and the failure looks transient."""
     binding = get_binding(tool_name)
     if binding is None:
-        log.warning("adaptive: unknown tool_id=%s", tool_name)
         return rejected_observation(
             tool_call_id=tool_call_id,
             tool_id=tool_name,
-            reason=f"Tool '{tool_name}' is not bound in the adaptive runtime.",
+            reason=f"Tool '{tool_name}' is not bound.",
         )
 
     args = dict(arguments or {})
     args["user_id"] = user_id
+    max_attempts = 1 + (binding.max_retries if binding.retryable else 0)
+    attempts = 0
+    last_exc: BaseException | None = None
+    raw: Any = None
     t0 = time.monotonic()
 
-    try:
-        raw = await asyncio.wait_for(
-            binding.executor(**args),
-            timeout=adaptive.per_tool_timeout_s,
-        )
-    except asyncio.TimeoutError:
-        duration_ms = int((time.monotonic() - t0) * 1000)
-        log.warning("adaptive: tool %s timed out after %ss",
-                    tool_name, adaptive.per_tool_timeout_s)
-        return failed_observation(
-            tool_call_id=tool_call_id,
-            tool_id=tool_name,
-            error_type="timeout",
-            message=f"Tool timed out after {adaptive.per_tool_timeout_s:.0f}s",
-            attempts=1,
-            duration_ms=duration_ms,
-            retryable=True,
-        )
-    except Exception as exc:  # noqa: BLE001
-        duration_ms = int((time.monotonic() - t0) * 1000)
-        log.exception("adaptive: tool %s raised", tool_name)
-        return failed_observation(
-            tool_call_id=tool_call_id,
-            tool_id=tool_name,
-            error_type=type(exc).__name__,
-            message=str(exc)[:400],
-            attempts=1,
-            duration_ms=duration_ms,
-        )
+    while attempts < max_attempts:
+        attempts += 1
+        try:
+            raw = await asyncio.wait_for(
+                binding.executor(**args),
+                timeout=adaptive.per_tool_timeout_s,
+            )
+            last_exc = None
+        except asyncio.TimeoutError as exc:
+            raw = None
+            last_exc = exc
+            log.warning("tool %s timeout attempt=%d", tool_name, attempts)
+        except Exception as exc:  # noqa: BLE001
+            raw = None
+            last_exc = exc
+            log.warning("tool %s raised attempt=%d: %s",
+                        tool_name, attempts, exc)
+
+        # Success path
+        if last_exc is None and isinstance(raw, dict) and not raw.get("error"):
+            break
+        # Retry decision
+        if attempts >= max_attempts:
+            break
+        if not binding.retryable or not _is_transient(
+                raw if isinstance(raw, dict) else None, last_exc):
+            break
+        # Exponential backoff: 0.4s, 0.8s, 1.6s
+        await asyncio.sleep(0.4 * (2 ** (attempts - 1)))
 
     duration_ms = int((time.monotonic() - t0) * 1000)
-    obs = normalize_result(
-        tool_id=tool_name,
-        tool_call_id=tool_call_id,
-        raw_result=raw if isinstance(raw, dict) else None,
-        duration_ms=duration_ms,
-        provider=binding.name,
-    )
-    # Redact any secret-looking args for the audit log.
+
+    if last_exc is not None:
+        obs = failed_observation(
+            tool_call_id=tool_call_id,
+            tool_id=tool_name,
+            error_type=type(last_exc).__name__,
+            message=str(last_exc)[:400] or "unknown error",
+            attempts=attempts,
+            duration_ms=duration_ms,
+            retryable=binding.retryable,
+        )
+    else:
+        obs = normalize_result(
+            tool_id=tool_name,
+            tool_call_id=tool_call_id,
+            raw_result=raw if isinstance(raw, dict) else None,
+            duration_ms=duration_ms,
+            provider=tool_name,
+        )
+        if obs.error:
+            obs.error["attempts"] = attempts
+
+    obs.metadata["attempts"] = attempts
     obs.metadata["arguments_redacted"] = _redact_args(
         {k: v for k, v in arguments.items() if k != "user_id"}
     )

@@ -42,6 +42,14 @@ async def arxiv_search(*, query: str, max_results: int = 5, **_: Any) -> dict[st
     try:
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": "Runner.ai/1.0"})
+            if resp.status_code == 429:
+                # arXiv rate-limit — degrade gracefully so the LLM can
+                # pick another source instead of retrying blindly.
+                return {
+                    "summary": "arXiv rate-limited this request (HTTP 429). Try again shortly.",
+                    "evidence": [],
+                    "unavailable": True,
+                }
             resp.raise_for_status()
             body = resp.text
     except Exception as exc:  # noqa: BLE001

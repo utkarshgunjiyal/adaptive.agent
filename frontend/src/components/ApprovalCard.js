@@ -1,24 +1,42 @@
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { ShieldCheck, ShieldX, Loader2, AlertTriangle } from 'lucide-react';
-import { approveRun, rejectRun } from '../api';
+import { approveRun, rejectRun, streamAdaptiveApprove, streamAdaptiveReject } from '../api';
 
 /**
  * Approval card shown inline in the chat when an agent run is waiting for
- * user approval. Renders the pending write/sensitive steps + Approve /
- * Reject buttons.
+ * user approval. Works for both legacy and adaptive runs.
+ *
+ * Props:
+ *   runId
+ *   steps           — legacy plan step shape OR adaptive proposal shape
+ *   runtime         — "adaptive" or "legacy" (defaults to legacy)
+ *   onResolved      — called after approve/reject completes
+ *   onAdaptiveEvent — for adaptive runs, receives the resume SSE frames so
+ *                     the drawer/message stream can update in place.
  */
-export default function ApprovalCard({ runId, steps, onResolved }) {
+export default function ApprovalCard({ runId, steps, runtime, onResolved, onAdaptiveEvent }) {
   const [busy, setBusy] = useState(null);
+  const isAdaptive = runtime === 'adaptive';
 
   async function approve() {
     setBusy('approve');
     try {
-      const finalRun = await approveRun(runId);
-      toast.success('Action approved — resuming run');
-      onResolved?.('approved', finalRun);
+      if (isAdaptive) {
+        await streamAdaptiveApprove({
+          runId,
+          decisions: null,
+          onEvent: onAdaptiveEvent || (() => {}),
+        });
+        toast.success('Approved — resuming run');
+        onResolved?.('approved');
+      } else {
+        const finalRun = await approveRun(runId);
+        toast.success('Action approved — resuming run');
+        onResolved?.('approved', finalRun);
+      }
     } catch (err) {
-      toast.error(err?.response?.data?.detail || 'Approval failed');
+      toast.error(err?.response?.data?.detail || err.message || 'Approval failed');
     } finally {
       setBusy(null);
     }
@@ -27,11 +45,20 @@ export default function ApprovalCard({ runId, steps, onResolved }) {
   async function reject() {
     setBusy('reject');
     try {
-      const finalRun = await rejectRun(runId);
-      toast('Action rejected. No write occurred.');
-      onResolved?.('rejected', finalRun);
+      if (isAdaptive) {
+        await streamAdaptiveReject({
+          runId,
+          onEvent: onAdaptiveEvent || (() => {}),
+        });
+        toast('Rejected — nothing was executed.');
+        onResolved?.('rejected');
+      } else {
+        const finalRun = await rejectRun(runId);
+        toast('Action rejected. No write occurred.');
+        onResolved?.('rejected', finalRun);
+      }
     } catch (err) {
-      toast.error(err?.response?.data?.detail || 'Reject failed');
+      toast.error(err?.response?.data?.detail || err.message || 'Reject failed');
     } finally {
       setBusy(null);
     }
@@ -55,27 +82,32 @@ export default function ApprovalCard({ runId, steps, onResolved }) {
       </p>
 
       <ul className="space-y-2 mb-4" data-testid="approval-steps">
-        {steps.map((step, i) => (
-          <li
-            key={step.id || i}
-            className="border border-night-border bg-night-surface p-3"
-            data-testid={`approval-step-${i + 1}`}
-          >
-            <div className="mono text-[11px] text-night-text mb-1">
-              {step.tool_id}
-            </div>
-            {step.rationale && (
-              <div className="text-[12px] text-night-textMuted leading-relaxed mb-2">
-                {step.rationale}
+        {steps.map((step, i) => {
+          const toolId = step.tool_id || step.toolId;
+          const args = step.arguments || step.args;
+          const rationale = step.rationale;
+          return (
+            <li
+              key={step.id || step.tool_call_id || i}
+              className="border border-night-border bg-night-surface p-3"
+              data-testid={`approval-step-${i + 1}`}
+            >
+              <div className="mono text-[11px] text-night-text mb-1">
+                {toolId}
               </div>
-            )}
-            {step.arguments && Object.keys(step.arguments).length > 0 && (
-              <pre className="mono text-[10px] text-night-textMuted bg-night-bg border border-night-border p-2 overflow-x-auto max-h-32">
-                {JSON.stringify(step.arguments, null, 2)}
-              </pre>
-            )}
-          </li>
-        ))}
+              {rationale && (
+                <div className="text-[12px] text-night-textMuted leading-relaxed mb-2">
+                  {rationale}
+                </div>
+              )}
+              {args && Object.keys(args).length > 0 && (
+                <pre className="mono text-[10px] text-night-textMuted bg-night-bg border border-night-border p-2 overflow-x-auto max-h-32">
+                  {JSON.stringify(args, null, 2)}
+                </pre>
+              )}
+            </li>
+          );
+        })}
       </ul>
 
       <div className="flex items-center gap-3">

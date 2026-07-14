@@ -118,6 +118,10 @@ Rules:
   compare / combine sources.
 - For document tools include a concise "query" argument.
 - For web/paper search include a "query" argument.
+- For paper_search / web_search the "query" MUST be plain keywords —
+  do NOT use quotes, parentheses, boolean operators (OR / AND) or
+  wildcards. arXiv rejects those. Example good: "agentic rag"; bad:
+  '"agentic RAG" OR (agent* AND retrieval)'.
 - Do NOT synthesize the answer yet — only produce the plan.
 - Output ONLY the JSON object. No prose, no code fences.
 """

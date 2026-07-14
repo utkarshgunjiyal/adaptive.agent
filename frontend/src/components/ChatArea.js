@@ -83,7 +83,6 @@ export default function ChatArea({
       { id: tempUserId, role: 'user', content: text, created_at: new Date().toISOString() },
     ]);
 
-    let localRunId = null;
     let finalAnswer = '';
     let finalCitations = [];
     let finalBadges = [];
@@ -111,7 +110,6 @@ export default function ChatArea({
           setRunEvents((prev) => [...prev, { event, data, ts: Date.now() }]);
 
           if (event === 'run_started') {
-            localRunId = data.run_id;
             setActiveRunId(data.run_id);
             if (!threadId && data.thread_id) {
               onEnsureThread(data.thread_id);
@@ -132,7 +130,12 @@ export default function ChatArea({
               finalCitations = [...finalCitations, ...items];
             }
           } else if (event === 'waiting_approval') {
-            setPendingApproval({ runId: data.run_id, steps: data.steps || [] });
+            const isAdaptive = data.runtime === 'adaptive' || data.proposals;
+            setPendingApproval({
+              runId: data.run_id,
+              steps: data.proposals || data.steps || [],
+              runtime: isAdaptive ? 'adaptive' : 'legacy',
+            });
           } else if (event === 'run_completed') {
             finalAnswer = data.answer || finalAnswer;
             finalCitations = data.citations || finalCitations;
@@ -156,7 +159,7 @@ export default function ChatArea({
       setRunInFlight(false);
       refreshThreads();
     }
-  }, [input, runInFlight, selectedDocIds, threadId, setMessages, setActiveRunId, setRunEvents, onEnsureThread, refreshThreads, setRunInFlight, adaptiveCfg]);
+  }, [input, runInFlight, selectedDocIds, threadId, setMessages, setActiveRunId, setRunEvents, onEnsureThread, refreshThreads, setRunInFlight]);
 
   const onKey = useCallback((e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -194,11 +197,22 @@ export default function ChatArea({
               <ApprovalCard
                 runId={pendingApproval.runId}
                 steps={pendingApproval.steps}
+                runtime={pendingApproval.runtime}
+                onAdaptiveEvent={({ event, data }) => {
+                  // Route resumed SSE frames through the same drawer/state
+                  // we use for the main run.
+                  setRunEvents((prev) => [...prev, { event, data, ts: Date.now() }]);
+                  if (event === 'answer_delta') {
+                    setStreamingText((prev) => prev + (data.text || ''));
+                  } else if (event === 'evidence_added') {
+                    setStreamingCitations((prev) => [...prev, ...(data.items || [])]);
+                  } else if (event === 'run_failed') {
+                    toast.error(`Run failed: ${data.error || 'unknown error'}`);
+                  }
+                }}
                 onResolved={async (kind, run) => {
                   setPendingApproval(null);
                   setRunInFlight(false);
-                  // Refetch the persisted messages so the resolved assistant
-                  // message + citations appear naturally.
                   try {
                     const fresh = await listMessages(threadId);
                     setMessages(fresh);

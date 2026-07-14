@@ -68,6 +68,23 @@ export default function ExecutionDrawer({ runId, events, inFlight }) {
               </Section>
             )}
 
+            {state.reselections.length > 0 && (
+              <Section title={`Reselections · ${state.reselections.length}`} defaultOpen>
+                <ul className="space-y-2" data-testid="reselections-list">
+                  {state.reselections.map((r, i) => (
+                    <li key={i} className="border border-signal-paper/40 bg-signal-paper/5 p-2 mono text-[10px]">
+                      <div className="text-signal-paper mb-1 uppercase tracking-widest">
+                        added: {(r.added || []).join(', ') || '—'}
+                      </div>
+                      <div className="text-night-textMuted normal-case tracking-normal">
+                        {r.reason}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </Section>
+            )}
+
             {state.toolCalls.length > 0 && (
               <Section title={`Tool calls · ${state.toolCalls.length}`} defaultOpen>
                 <ul className="space-y-2">
@@ -292,20 +309,61 @@ function buildState(events) {
     plan: null,
     toolCalls: [],
     evidence: [],
+    reselections: [],
     completed: false,
     failed: false,
     error: null,
     durationMs: null,
+    runtime: null,
   };
   for (const { event, data } of events) {
-    if (event === 'capabilities_selected') state.selectedTools = data.tools || [];
-    else if (event === 'plan_ready') state.plan = data.plan;
+    if (event === 'capabilities_selected') {
+      const tools = data.tools || [];
+      state.selectedTools = tools.map((t) =>
+        typeof t === 'string'
+          ? { id: t, name: t, badge: 'context' }
+          : t,
+      );
+    } else if (event === 'plan_ready') state.plan = data.plan;
     else if (event === 'tool_call') {
+      // Legacy path — one event carries both start and end.
       const idx = state.toolCalls.findIndex((c) => c.step_id === data.step_id);
       if (idx >= 0) state.toolCalls[idx] = data;
       else state.toolCalls.push(data);
-    } else if (event === 'evidence_ready') state.evidence = data.items || [];
-    else if (event === 'run_completed') {
+    } else if (event === 'tool_started') {
+      // Adaptive path — separate start/complete pair.
+      state.toolCalls.push({
+        id: data.tool_call_id,
+        tool_id: data.tool_id,
+        status: 'running',
+        arguments: data.arguments,
+        approval_status: data.approval_status,
+      });
+    } else if (event === 'tool_completed') {
+      const idx = state.toolCalls.findIndex((c) => c.id === data.tool_call_id);
+      const patch = {
+        status: mapAdaptiveStatus(data.status),
+        latency_ms: data.duration_ms,
+        evidence_count: data.evidence_count || 0,
+        output_summary: data.summary,
+        error: (data.error && (data.error.message || data.error.type)) || null,
+      };
+      if (idx >= 0) state.toolCalls[idx] = { ...state.toolCalls[idx], ...patch };
+      else state.toolCalls.push({ id: data.tool_call_id, tool_id: data.tool_id, ...patch });
+    } else if (event === 'evidence_ready') {
+      state.evidence = data.items || [];
+    } else if (event === 'evidence_added') {
+      state.evidence = [...state.evidence, ...(data.items || [])];
+    } else if (event === 'capability_reselected') {
+      state.reselections.push({
+        reason: data.reason,
+        added: data.added || [],
+        bound: data.bound_tools || [],
+      });
+      state.selectedTools = (data.bound_tools || []).map((n) => ({ id: n, name: n, badge: 'context' }));
+    } else if (event === 'run_started') {
+      state.runtime = data.runtime || null;
+    } else if (event === 'run_completed') {
       state.completed = true;
       state.durationMs = data.duration_ms;
     } else if (event === 'run_failed') {
@@ -314,4 +372,13 @@ function buildState(events) {
     }
   }
   return state;
+}
+
+function mapAdaptiveStatus(s) {
+  if (s === 'success') return 'ok';
+  if (s === 'failed') return 'error';
+  if (s === 'rejected') return 'skipped';
+  if (s === 'empty') return 'ok';
+  if (s === 'unavailable') return 'skipped';
+  return s || 'pending';
 }

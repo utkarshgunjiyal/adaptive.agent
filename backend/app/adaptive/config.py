@@ -28,11 +28,11 @@ class AdaptiveConfig:
     llm_base_url: str = (os.getenv("LLM_BASE_URL") or "").strip()
 
     # -- runtime limits ---------------------------------------------------
-    max_iterations: int = int(os.getenv("ADAPTIVE_MAX_ITERATIONS", "12"))
-    max_tool_calls_total: int = int(os.getenv("ADAPTIVE_MAX_TOOL_CALLS", "20"))
-    max_calls_per_tool: int = int(os.getenv("ADAPTIVE_MAX_CALLS_PER_TOOL", "6"))
+    max_iterations: int = int(os.getenv("ADAPTIVE_MAX_ITERATIONS", "6"))
+    max_tool_calls_total: int = int(os.getenv("ADAPTIVE_MAX_TOOL_CALLS", "8"))
+    max_calls_per_tool: int = int(os.getenv("ADAPTIVE_MAX_CALLS_PER_TOOL", "3"))
     per_tool_timeout_s: float = float(os.getenv("ADAPTIVE_TOOL_TIMEOUT_S", "25"))
-    overall_run_timeout_s: float = float(os.getenv("ADAPTIVE_RUN_TIMEOUT_S", "120"))
+    overall_run_timeout_s: float = float(os.getenv("ADAPTIVE_RUN_TIMEOUT_S", "90"))
 
     # -- feature flag -----------------------------------------------------
     # When true, the frontend defaults to /api/agent/run/adaptive/stream.
