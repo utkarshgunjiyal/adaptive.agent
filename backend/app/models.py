@@ -150,16 +150,23 @@ class EvidenceItem(BaseModel):
 
 class ToolCallLog(BaseModel):
     id: str
-    step_id: str
+    step_id: str = ""
     tool_id: str
-    status: Literal["pending", "running", "ok", "error", "skipped"] = "pending"
+    status: Literal[
+        # legacy planner statuses
+        "pending", "running", "ok", "error", "skipped",
+        # adaptive runtime statuses
+        "success", "empty", "failed", "rejected", "unavailable", "uncertain",
+    ] = "pending"
     started_at: datetime | None = None
     completed_at: datetime | None = None
     latency_ms: int | None = None
     arguments: dict[str, Any] = Field(default_factory=dict)
     output_summary: str | None = None
-    error: str | None = None
+    summary: str | None = None
+    error: str | dict[str, Any] | None = None
     evidence_count: int = 0
+    duration_ms: int | None = None
 
 
 class AgentRunRequest(BaseModel):
@@ -182,3 +189,5 @@ class AgentRunPublic(BaseModel):
     selected_tools: list[str] = Field(default_factory=list)
     error: str | None = None
     duration_ms: int | None = None
+    runtime: str | None = None
+    stop_reason: str | None = None

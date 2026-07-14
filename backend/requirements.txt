@@ -1,8 +1,10 @@
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
-motor==3.6.0
-pymongo==4.9.1
+motor==3.7.1
+pymongo==4.15.5
 pydantic==2.9.2
+# pinned to satisfy pydantic 2.9.2's exact pydantic-core requirement (see boot failure log 2026-07-14)
+pydantic-core==2.23.4
 pydantic-settings==2.5.2
 python-dotenv==1.0.1
 python-multipart==0.0.12
@@ -11,4 +13,12 @@ PyJWT==2.9.0
 httpx==0.27.2
 pypdf==5.0.1
 numpy==2.1.2
+apscheduler==3.11.3
+rank_bm25==0.2.2
+reportlab==5.0.0
 emergentintegrations
+# Adaptive runtime (Phase 1+)
+langgraph==0.2.76
+langgraph-checkpoint==2.1.2
+langgraph-checkpoint-mongodb==0.2.1
+langchain-core==0.3.86

@@ -150,6 +150,68 @@ export async function getPendingApproval(threadId) {
   return data;
 }
 
+// ---- Adaptive runtime ----
+// Feature flag lookup + bound-tool listing.
+export async function getAdaptiveConfig() {
+  try {
+    const { data } = await api.get('/agent/adaptive/config');
+    return data;
+  } catch (_err) {
+    return { enabled: false, default: false };
+  }
+}
+
+/**
+ * Stream the adaptive run (LangGraph). Same wire format as
+ * streamAgentRun with a superset of events:
+ *   llm_thinking, tool_started, tool_completed, evidence_added,
+ *   answer_delta, run_completed, run_failed.
+ *
+ * Legacy /run/stream is preserved for rollback.
+ */
+export async function streamAdaptiveRun({ threadId, message, documentIds, onEvent, signal }) {
+  const token = loadToken();
+  const resp = await fetch(`${API_BASE}/agent/run/adaptive/stream`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({
+      thread_id: threadId,
+      message,
+      document_ids: documentIds || [],
+    }),
+    signal,
+  });
+
+  if (!resp.ok) {
+    const txt = await resp.text();
+    throw new Error(`Adaptive request failed (${resp.status}): ${txt}`);
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buffer.indexOf('\n\n')) !== -1) {
+      const raw = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      const frame = parseFrame(raw);
+      if (frame) onEvent(frame);
+    }
+  }
+  if (buffer.trim()) {
+    const frame = parseFrame(buffer);
+    if (frame) onEvent(frame);
+  }
+}
+
 /**
  * Stream an agent run from POST /api/agent/run/stream using fetch (SSE
  * over a POST body — the browser EventSource API doesn't support POST).

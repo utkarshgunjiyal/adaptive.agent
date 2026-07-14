@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.db import close_client, ensure_indexes
 from app.routes.agent import router as agent_router
+from app.routes.adaptive_agent import router as adaptive_agent_router
 from app.routes.auth import router as auth_router
 from app.routes.digests import router as digests_router
 from app.routes.documents import router as documents_router
@@ -71,6 +72,7 @@ app.include_router(auth_router)
 app.include_router(threads_router)
 app.include_router(documents_router)
 app.include_router(agent_router)
+app.include_router(adaptive_agent_router)
 app.include_router(digests_router)
 app.include_router(share_router)
 

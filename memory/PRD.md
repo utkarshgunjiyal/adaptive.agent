@@ -1,77 +1,93 @@
 # Runner.ai — Product Requirements
 
 ## Original Problem Statement
-Build a production-quality full-stack autonomous AI research platform named **Runner.ai**. A user signs in, uploads private PDFs, and chats with an agent that decides (under strict backend control) which tools to use: private-document retrieval, web search, research-paper search, or a combination. Distinguish four source classes: **private document · research paper · web · conversation context**. Every answer must be grounded and cite the retrieved evidence.
+Upgrade the existing Runner.ai repository into a production-grade Adaptive RAG
+and tool-using agent. Preserve the existing FastAPI + React + MongoDB stack.
+Every tool observation must return to the LLM as a ToolMessage so the LLM
+chooses the next action — not a fixed plan generated up front.
 
 ## User Choices (2026-01)
-- Runtime: **Preview build** (FastAPI + React + MongoDB + in-process background tasks + Mongo-backed vector store) **AND** a full `docker-compose.yml` for local Postgres/Redis/Celery/Qdrant/MinIO stack.
-- LLM: **gpt-5.2** via **Emergent Universal LLM key**.
-- Web search: **Tavily** (`TAVILY_API_KEY` provided); Papers: **arXiv** (no key).
-- Auth: **JWT + bcrypt** (email/password).
-- Delivery order: **Phases 1–4 first**, Phase 5–6 (planner details, MCP adapter, approvals UI) as follow-ups.
+- **LLM provider**: Emergent Universal LLM key today; provider abstraction
+  supports `LLM_PROVIDER=emergent|anthropic|openrouter` via env, no code change.
+- **Adaptive model**: Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`).
+- **Checkpointer**: MongoDB via the official `langgraph-checkpoint-mongodb`
+  (`AsyncMongoDBSaver`) on the existing cluster, isolated DB
+  `runner_ai_langgraph`.
+- **Rollback**: legacy `/api/agent/run/stream` stays reachable; adaptive is
+  gated by the `ADAPTIVE_DEFAULT` env flag + backend feature-flag endpoint.
+- **Testing**: legacy pytest suite must remain green throughout.
 
-## Architecture (preview)
+## Phase 1 — COMPLETE (2026-07-14)
+
+### Restored bootability (isolated first change)
+- `pydantic 2.9.2` was pinned but `pydantic-core 2.46.4` was installed →
+  `ImportError: validate_core_schema`. Downgraded to `pydantic-core==2.23.4`
+  (the exact pin `pydantic 2.9.2` declares). Backend now boots.
+- Added missing runtime deps (`apscheduler`, `rank_bm25`, `reportlab`).
+
+### Adaptive runtime (LangGraph)
+- New package `app/adaptive/`:
+  - `providers/base.py`, `providers/emergent.py`, `providers/__init__.py`
+  - `tool_bindings.py` — Phase 1 binds `search_document_chunks`
+  - `normalize.py` — `ToolObservation` w/ statuses
+    `success|empty|failed|rejected|unavailable|uncertain`
+  - `executor.py` — safe executor with timeout + secret redaction
+  - `state.py`, `nodes.py`, `graph.py`, `config.py`
+- New endpoint `POST /api/agent/run/adaptive/stream` (SSE)
+- New endpoint `GET /api/agent/adaptive/config` (feature flag)
+
+### Legacy preserved
+- `services/agent.py`, `services/llm.py`, `services/thread_summary.py`,
+  `services/hybrid_retrieval.py`, existing tool modules — unchanged.
+- `routes/agent.py::_run_public` made lenient for adaptive rows.
+- `models.ToolCallLog.status` extended (backward compatible).
+
+### Frontend
+- `api.js`: `streamAdaptiveRun` + `getAdaptiveConfig`.
+- `ChatArea.js`: routes to adaptive when backend flag is on; runtime label
+  displays `adaptive · claude-sonnet-4-5-20250929`.
+
+### Verification (Phase 1)
+- `pip check`: **No broken requirements found.**
+- `import app.main`: **OK**.
+- `GET /api/health` → `{"status":"ok"}`; `/api/ready` → mongodb True.
+- Legacy pytest: **21/21 pass** (`tests/backend_test.py`).
+- Adaptive pytest: **3/3 pass** (`tests/adaptive_phase1_test.py`).
+- Bind-tools live spike PASS with Claude Sonnet 4.5.
+- Frontend E2E: direct answer + document flow both green.
+- MongoDB persistence: adaptive runs + LangGraph checkpoints verified.
+
+## Architecture (current)
+
 - **Backend** — FastAPI (`/app/backend`)
-  - `app/routes/` — auth, threads, documents, agent (SSE), tools, ops
-  - `app/services/` — thread_service, ingest, agent (planner/executor/synth), embeddings, vector_store, storage, llm
-  - `app/tools/` — registry, document_search, web_search (Tavily), paper_search (arXiv)
-  - `app/auth.py` — bcrypt + JWT + per-user in-memory rate limiter
-  - `app/models.py` — Pydantic models incl. `AgentPlan`, `PlanStep`, `EvidenceItem`, `ToolCallLog`, `AgentRunPublic`
+  - `app/routes/` — auth, threads, documents, agent (legacy),
+    **adaptive_agent (new)**, tools, ops, digests, share
+  - `app/services/` — thread_service, ingest, agent (legacy), hybrid_retrieval,
+    llm, thread_summary, mcp, storage, embeddings, ocr, digest
+  - `app/tools/` — registry, document_search, web_search, paper_search,
+    user_preferences
+  - `app/adaptive/` — providers, tool_bindings, normalize, executor, state,
+    nodes, graph, config
 - **Frontend** — React (CRA) + Tailwind + Sonner + lucide-react
-  - `src/pages/LandingPage.js`, `LoginPage.js`, `RegisterPage.js`, `WorkspacePage.js`
-  - `src/components/ThreadSidebar.js`, `DocumentPanel.js`, `ChatArea.js`, `ExecutionDrawer.js`
-  - `src/api.js` — axios + SSE-over-fetch client for `/agent/run/stream`
-- **DB** — MongoDB (`runner_ai`). Collections: `users`, `threads`, `messages`, `documents`, `jobs`, `chunks`, `agent_runs`, `user_preferences`, `tool_calls`, `evidence_items`, `approval_requests`.
-- **Docker Compose** — `/app/docker-compose.yml` ships Postgres, Redis, Qdrant, MinIO, Celery worker, and nginx-served frontend (superset image; not runnable in preview).
+- **DB** — MongoDB
+  - `runner_ai.*` — application collections (unchanged)
+  - `runner_ai_langgraph.checkpoints_aio / checkpoint_writes_aio` —
+    durable LangGraph checkpointing
 
-## Data isolation
-Every collection is queried with `user_id` and thread ownership is checked before any read. Documents are stored on disk under `<STORAGE_DIR>/<user_id>/…` — no cross-user path.
+## Backlog
 
-## V2 (2026-01-13) — job-ready release
-
-**Every P0/P1/P2 improvement from the V1 review has been implemented and tested (11/11 new tests, 21/21 V1 regression):**
-
-- ✅ Structured JSON planner via schema-validated `complete_json` (fallback path kept)
-- ✅ Hybrid retrieval — BM25 + hashed-dense + Reciprocal Rank Fusion + gpt-5.2 rerank
-- ✅ Incremental thread summaries (`thread_summaries` collection · summarised in batches of 8)
-- ✅ Approval workflow — `save_user_preference` write tool + amber ApprovalCard + resume-with-timeout
-- ✅ Generic MCP HTTP adapter with boot-time discovery (`MCP_SERVERS` env)
-- ✅ OCR fallback via pytesseract for scanned PDFs
-- ✅ Proxy-aware rate limiter (`X-Forwarded-For` + `X-Real-IP`) + public share-endpoint limiter
-- ✅ Multi-file drag-and-drop upload (`/api/documents/upload_bulk`)
-- ✅ Share thread — public read-only `/share/:token` route + revoke + copy fallback for headless
-- ✅ Cost/latency stats on ExecutionDrawer completion card (duration · tools · evidence · per-tool ms)
-- ✅ Research digest — APScheduler in-process (rehydrates on startup) + `hourly | daily | weekly` cadences
-- ✅ Approval card hydration on page reload (`GET /agent/threads/{id}/pending_approval`)
-- ✅ Lenient plan-schema loader on resume (no 500s on schema drift)
-- ✅ `asyncio.wait_for(90s)` timeout guard around approve-resume path
-
-## What's Implemented (2026-01-13)
-- ✅ JWT/bcrypt auth (`/api/auth/register|login|me|logout`) — rate limited per client
-- ✅ Threads + messages (`/api/threads*`) with per-user ownership checks
-- ✅ PDF upload → validate → disk store → Mongo `documents` + `jobs` → async ingest
-- ✅ pypdf text extraction, chunking (1200/180), deterministic hashed embeddings, Mongo vector store with cosine search
-- ✅ gpt-5.2 document summaries generated after ingestion
-- ✅ Tool registry with 5 tools: `search_document_chunks`, `get_document_summary`, `list_user_documents`, `web_search` (Tavily), `paper_search` (arXiv)
-- ✅ Deterministic capability selector + gpt-5.2 planner emitting JSON `AgentPlan` + policy validator
-- ✅ Parallel executor with dependencies, per-tool timeouts, normalised `EvidenceItem`s
-- ✅ Grounded synthesizer streaming `[n]` citations via SSE
-- ✅ Full run inspection (`GET /api/agent/runs/{id}`) + approve/reject endpoints for future write tools
-- ✅ Frontend: landing, login/register, workspace (3-column) with execution drawer
-- ✅ Docker-compose stack (Postgres/Redis/Qdrant/MinIO/Celery/nginx) for local production deploy
-- ✅ QA: 21/21 backend pytest + full E2E Playwright flow passing (`/app/test_reports/iteration_1.json`)
-
-## Post-V1 fixes (2026-01-13)
-- Documents fetched on workspace mount → composer "N DOC READY" counter accurate without opening Documents tab.
-
-## Backlog (P1)
-- Real embedding provider (e.g. text-embedding-3-small) when available in the Emergent LLM key — swap in `services/embeddings.py`
-- Persistent Redis-backed rate limiter for multi-worker deployments
-- OpenGraph meta tags for shared-thread previews
-- Streaming `[n]` citations that reconcile mid-token (currently reconcile after `evidence_ready`)
+- **P0 Phase 2** — Bind arXiv + Tavily to the adaptive graph. Add capability
+  re-selection when a tool returns `empty`/`failed`. Add bounded retries in
+  the safe executor. Acceptance tests 3–5.
+- **P0 Phase 3** — HITL. Wire `save_user_preference` + arXiv-paper import
+  through `interrupt()` with the Mongo checkpointer.
+- **P1 Phase 4** — Native token streaming, activity timeline UI, expanded
+  observability, Anthropic + OpenRouter provider adapters.
+- **P2** — Duplicate-tool-call detector, circuit breaker, prompt-injection
+  test suite, run cancellation.
 
 ## Test credentials
-`/app/memory/test_credentials.md`
+See `/app/memory/test_credentials.md`.
 
 ## Next Actions
-See finish summary.
+Phase 2 (adaptive multi-tool + capability reselection + failure recovery).

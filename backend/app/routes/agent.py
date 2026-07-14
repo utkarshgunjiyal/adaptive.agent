@@ -49,9 +49,25 @@ def _run_public(row: dict) -> AgentRunPublic:
             plan = AgentPlan(**row["plan"])
         except Exception:  # noqa: BLE001
             plan = None
-    tool_calls = [ToolCallLog(**t) for t in row.get("tool_calls") or []]
-    evidence = [EvidenceItem(**e) for e in row.get("evidence") or []]
-    citations = [EvidenceItem(**e) for e in row.get("citations") or []]
+    tool_calls: list[ToolCallLog] = []
+    for t in row.get("tool_calls") or []:
+        try:
+            tool_calls.append(ToolCallLog(**t))
+        except Exception:  # noqa: BLE001
+            # Adaptive-runtime rows may carry a superset of fields.
+            continue
+    evidence: list[EvidenceItem] = []
+    for e in row.get("evidence") or []:
+        try:
+            evidence.append(EvidenceItem(**e))
+        except Exception:  # noqa: BLE001
+            continue
+    citations: list[EvidenceItem] = []
+    for e in row.get("citations") or []:
+        try:
+            citations.append(EvidenceItem(**e))
+        except Exception:  # noqa: BLE001
+            continue
     return AgentRunPublic(
         id=str(row["_id"]),
         thread_id=row["thread_id"],
@@ -66,6 +82,8 @@ def _run_public(row: dict) -> AgentRunPublic:
         selected_tools=row.get("selected_tools") or [],
         error=row.get("error"),
         duration_ms=row.get("duration_ms"),
+        runtime=row.get("runtime"),
+        stop_reason=row.get("stop_reason"),
     )
 
 

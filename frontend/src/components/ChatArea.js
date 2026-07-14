@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Send, Loader2, FileText, BookOpen, Globe, MessageSquare, ArrowUpRight } from 'lucide-react';
-import { streamAgentRun, listMessages, getPendingApproval } from '../api';
+import { streamAgentRun, streamAdaptiveRun, getAdaptiveConfig, listMessages, getPendingApproval } from '../api';
 import ApprovalCard from './ApprovalCard';
 
 export default function ChatArea({
@@ -24,7 +24,22 @@ export default function ChatArea({
   const [streamingCitations, setStreamingCitations] = useState([]);
   const [streamingBadges, setStreamingBadges] = useState([]);
   const [pendingApproval, setPendingApproval] = useState(null); // {runId, steps}
+  const [adaptiveCfg, setAdaptiveCfg] = useState(null); // {enabled, default, model, ...}
+  const adaptiveCfgRef = useRef(null);
   const scrollRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const cfg = await getAdaptiveConfig();
+        if (cancelled) return;
+        setAdaptiveCfg(cfg);
+        adaptiveCfgRef.current = cfg;
+      } catch (_) { /* silent */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     // scroll to bottom on new message
@@ -74,7 +89,21 @@ export default function ChatArea({
     let finalBadges = [];
 
     try {
-      await streamAgentRun({
+      // Resolve adaptive endpoint just-in-time. If the flag hasn't loaded
+      // yet, block for it once so the very first send after mount is not
+      // silently routed to the legacy endpoint.
+      let cfg = adaptiveCfgRef.current;
+      if (!cfg) {
+        try {
+          cfg = await getAdaptiveConfig();
+          adaptiveCfgRef.current = cfg;
+          setAdaptiveCfg(cfg);
+        } catch (_) { cfg = null; }
+      }
+      const streamer = (cfg?.enabled && cfg?.default)
+        ? streamAdaptiveRun
+        : streamAgentRun;
+      await streamer({
         threadId,
         message: text,
         documentIds: selectedDocIds,
@@ -91,9 +120,17 @@ export default function ChatArea({
             const delta = data.text || '';
             setStreamingText((prev) => prev + delta);
             finalAnswer += delta;
-          } else if (event === 'evidence_ready') {
-            setStreamingCitations(data.items || []);
-            finalCitations = data.items || [];
+          } else if (event === 'evidence_added' || event === 'evidence_ready') {
+            // Adaptive uses evidence_added (may fire multiple times); legacy
+            // uses evidence_ready (fires once). Both carry items[].
+            const items = data.items || [];
+            if (event === 'evidence_ready') {
+              setStreamingCitations(items);
+              finalCitations = items;
+            } else {
+              setStreamingCitations((prev) => [...prev, ...items]);
+              finalCitations = [...finalCitations, ...items];
+            }
           } else if (event === 'waiting_approval') {
             setPendingApproval({ runId: data.run_id, steps: data.steps || [] });
           } else if (event === 'run_completed') {
@@ -119,7 +156,7 @@ export default function ChatArea({
       setRunInFlight(false);
       refreshThreads();
     }
-  }, [input, runInFlight, selectedDocIds, threadId, setMessages, setActiveRunId, setRunEvents, onEnsureThread, refreshThreads, setRunInFlight]);
+  }, [input, runInFlight, selectedDocIds, threadId, setMessages, setActiveRunId, setRunEvents, onEnsureThread, refreshThreads, setRunInFlight, adaptiveCfg]);
 
   const onKey = useCallback((e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -216,7 +253,11 @@ export default function ChatArea({
             </button>
           </div>
           <div className="mt-2 mono text-[10px] uppercase tracking-widest text-night-textMuted flex items-center gap-3">
-            <span>gpt-5.2</span>
+            <span data-testid="composer-runtime-label">
+              {adaptiveCfg?.enabled && adaptiveCfg?.default
+                ? `adaptive · ${adaptiveCfg.model || 'claude sonnet 4.5'}`
+                : 'gpt-5.2'}
+            </span>
             <span className="opacity-40">·</span>
             <span>{documents.filter((d) => d.status === 'ready').length} doc ready</span>
           </div>
