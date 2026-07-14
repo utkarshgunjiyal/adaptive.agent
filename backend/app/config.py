@@ -29,6 +29,16 @@ class Settings(BaseSettings):
     mongo_url: str
     db_name: str = "runner_ai"
 
+    # -- Background job queue ----------------------------------------------------
+    # backend: inline (default) runs ingestion as in-process asyncio tasks —
+    # the preview behaviour. redis pushes the job payload onto a Redis list
+    # (JOB_QUEUE_NAME) consumed by the dedicated worker process
+    # (`python -m app.worker`) — the Docker Compose production behaviour.
+    job_queue_backend: str = "inline"     # inline | redis
+    redis_url: str | None = None
+    job_queue_name: str = "runner:jobs:document_ingest"
+    worker_dequeue_timeout: int = 5
+
     # -- JWT --------------------------------------------------------------------
     jwt_secret: str
     jwt_algorithm: str = "HS256"
