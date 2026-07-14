@@ -16,16 +16,19 @@ class AdaptiveConfig:
     """Read-once configuration for the adaptive graph."""
 
     # -- provider abstraction ---------------------------------------------
-    llm_provider: str = os.getenv("LLM_PROVIDER", "emergent").strip().lower()
-    # NOTE: LLM_MODEL_ADAPTIVE takes precedence so the legacy `LLM_MODEL`
-    # (kept for /run/stream compatibility) can stay pinned to gpt-5.2.
+    # Provider + credentials come from the shared application settings
+    # (OpenRouter or the direct Anthropic API). The adaptive runtime only
+    # overrides the model id, so operators can pin a different model here
+    # than the legacy /run/stream path without changing credentials.
+    #   LLM_MODEL_ADAPTIVE takes precedence over the base LLM_MODEL.
+    llm_provider: str = (
+        os.getenv("LLM_PROVIDER") or base_settings.llm_provider or "auto"
+    ).strip().lower()
     llm_model: str = (
         os.getenv("LLM_MODEL_ADAPTIVE")
         or os.getenv("LLM_MODEL")
-        or "claude-sonnet-4-5-20250929"
+        or base_settings.llm_model
     ).strip()
-    llm_api_key: str = (os.getenv("LLM_API_KEY") or base_settings.emergent_llm_key or "").strip()
-    llm_base_url: str = (os.getenv("LLM_BASE_URL") or "").strip()
 
     # -- runtime limits ---------------------------------------------------
     max_iterations: int = int(os.getenv("ADAPTIVE_MAX_ITERATIONS", "6"))

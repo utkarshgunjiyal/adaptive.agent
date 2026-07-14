@@ -2,11 +2,12 @@
 
 Runner.ai's preview build stores vectors in MongoDB and searches them with
 cosine similarity. A high-quality embedding model would be OpenAI's
-``text-embedding-3-small``, but the Emergent Universal LLM key exposes chat
-models only — not the embeddings endpoint. To keep the app fully functional
-inside the preview without a second paid provider, we use a deterministic,
-tokenised hashed-feature embedding (a well-known baseline that captures
-lexical overlap well enough for cosine-based retrieval on user documents).
+``text-embedding-3-small``, but Runner.ai's chat providers (OpenRouter /
+Anthropic) are used for chat only — this build does not depend on a separate
+embeddings endpoint. To keep the app fully functional without a second paid
+provider, we use a deterministic, tokenised hashed-feature embedding (a
+well-known baseline that captures lexical overlap well enough for cosine-based
+retrieval on user documents).
 
 This module is intentionally isolated so a real embeddings provider can be
 dropped in later without touching the rest of the pipeline: change

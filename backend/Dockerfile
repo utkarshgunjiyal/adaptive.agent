@@ -19,8 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
       celery[redis] \
       qdrant-client \
       minio \
-      psycopg2-binary \
- && pip install --no-cache-dir --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/ emergentintegrations
+      psycopg2-binary
 
 COPY . /app
 

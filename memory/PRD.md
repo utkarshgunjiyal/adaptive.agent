@@ -5,9 +5,12 @@ Adaptive RAG + tool-using agent on top of the existing Runner.ai stack.
 Every tool observation returns to the LLM as a ToolMessage.
 
 ## User Choices (2026-01)
-- **LLM provider**: Emergent Universal Key today; provider abstraction supports
-  `LLM_PROVIDER=emergent|anthropic|openrouter`.
-- **Adaptive model**: Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`).
+- **LLM provider**: user-owned credentials only. Provider abstraction supports
+  `LLM_PROVIDER=openrouter|anthropic` (plus `auto` / `stub`). OpenRouter is the
+  default production provider because it allows model switching without code
+  changes. No Emergent hosting / Universal Key / `emergentintegrations`.
+- **Adaptive model**: read from `LLM_MODEL` / `LLM_MODEL_ADAPTIVE` — never
+  hard-coded. For OpenRouter use e.g. `anthropic/claude-3.5-sonnet`.
 - **Checkpointer**: MongoDB via official `langgraph-checkpoint-mongodb`
   (`AsyncMongoDBSaver`) on isolated DB `runner_ai_langgraph`.
 - **Rollback**: legacy `/api/agent/run/stream` preserved.
@@ -132,12 +135,14 @@ Backend `.env`:
 MONGO_URL=mongodb://localhost:27017            # existing, protected
 DB_NAME=runner_ai                              # existing, protected
 JWT_SECRET=...                                 # existing
-EMERGENT_LLM_KEY=sk-emergent-...               # required
-LLM_PROVIDER=emergent|anthropic|openrouter     # default: emergent
-LLM_MODEL_ADAPTIVE=claude-sonnet-4-5-20250929  # default: Claude Sonnet 4.5
-LLM_MODEL=gpt-5.2                              # legacy planner only
-LLM_API_KEY=<optional, for anthropic/openrouter>
-LLM_BASE_URL=<optional>
+LLM_PROVIDER=openrouter|anthropic|auto|stub    # default: auto (prefers openrouter)
+LLM_MODEL=anthropic/claude-3.5-sonnet          # provider-compatible model id
+LLM_MODEL_ADAPTIVE=<optional adaptive-only model override>
+OPENROUTER_API_KEY=<secret; required for openrouter>
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_HTTP_REFERER=<optional application URL>
+OPENROUTER_APP_NAME=Runner.ai
+ANTHROPIC_API_KEY=<secret; required for anthropic>
 ADAPTIVE_DEFAULT=true
 ADAPTIVE_MAX_ITERATIONS=6
 ADAPTIVE_MAX_TOOL_CALLS=8
@@ -158,9 +163,10 @@ Frontend `.env` (protected): `REACT_APP_BACKEND_URL`.
 2. **No token-level streaming** yet — `answer_delta` fires once at
    finalize. LiteLLM's native tool-calling doesn't cleanly interleave
    partial content with tool_calls in a single stream; deferred.
-3. **Anthropic / OpenRouter provider adapters are declared but not
-   activated** — factory raises `ProviderNotConfigured` for those. Only
-   Emergent is exercised in this build.
+3. **Provider adapters** — OpenRouter (default) and the direct Anthropic API
+   are both active, wired through LangChain `ChatOpenAI` / `ChatAnthropic`
+   with native `bind_tools`. A `stub` provider runs with no network for
+   local dev / CI. Emergent has been fully removed.
 4. **Duplicate detection is exact-match** on canonical args. Slight
    variations (e.g. changed `top_k`) bypass it. Iteration caps prevent
    runaway loops.

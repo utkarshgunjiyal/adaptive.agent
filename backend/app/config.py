@@ -18,6 +18,13 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
+    # -- Runtime environment ----------------------------------------------------
+    # APP_ENV gates behaviour that must never reach production. In particular the
+    # deterministic `stub` LLM provider is only permitted in development / test;
+    # in production a missing or invalid LLM configuration fails readiness
+    # instead of silently degrading to stub answers.
+    app_env: str = "development"   # development | test | staging | production
+
     # -- MongoDB ----------------------------------------------------------------
     mongo_url: str
     db_name: str = "runner_ai"
@@ -27,10 +34,37 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 1440  # 24 hours
 
-    # -- Emergent LLM -----------------------------------------------------------
-    emergent_llm_key: str
-    llm_model: str = "gpt-5.2"
-    llm_provider: str = "openai"
+    # -- LLM providers (user-owned credentials) ---------------------------------
+    # Runner.ai runs entirely on the operator's own LLM credentials. Two
+    # providers are supported: OpenRouter (OpenAI-compatible API, the default
+    # production provider because it allows switching models via LLM_MODEL
+    # without touching application code) and the direct Anthropic API.
+    #
+    #   provider: auto | openrouter | anthropic | stub
+    #     auto  -> openrouter if OPENROUTER_API_KEY is set,
+    #              else anthropic if ANTHROPIC_API_KEY is set,
+    #              else stub (deterministic, no network — dev/CI only).
+    #
+    # The model identifier is NEVER hard-coded in application code; it is read
+    # from LLM_MODEL and must be valid for the selected provider (for OpenRouter
+    # use e.g. "anthropic/claude-3.5-sonnet"; for direct Anthropic use e.g.
+    # "claude-sonnet-4-5-20250929").
+    llm_provider: str = "auto"
+    llm_model: str = "anthropic/claude-3.5-sonnet"
+    llm_max_tokens: int = 1024
+    llm_temperature: float = 0.3
+    llm_timeout_seconds: int = 30
+    llm_max_retries: int = 2
+
+    # OpenRouter (OpenAI-compatible). Credentials stay server-side; never
+    # exposed to the frontend and never logged.
+    openrouter_api_key: str | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_http_referer: str | None = None      # optional application URL
+    openrouter_app_name: str = "Runner.ai"
+
+    # Direct Anthropic API.
+    anthropic_api_key: str | None = None
 
     # -- External tools ---------------------------------------------------------
     tavily_api_key: str | None = None

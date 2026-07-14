@@ -32,6 +32,7 @@ from app.adaptive.tool_bindings import all_names
 from app.auth import check_rate_limit, get_current_user
 from app.config import settings
 from app.db import get_db
+from app.llm_factory import resolve_provider
 from app.models import AgentRunRequest
 from app.services import agent as agent_svc
 from app.services import thread_service
@@ -383,7 +384,7 @@ async def adaptive_config(user=Depends(get_current_user)):
     return {
         "enabled": True,
         "default": adaptive.default_adaptive,
-        "provider": adaptive.llm_provider,
+        "provider": resolve_provider(settings, adaptive.llm_provider),
         "model": adaptive.llm_model,
         "bound_tools": sorted(all_names()),
         "limits": {

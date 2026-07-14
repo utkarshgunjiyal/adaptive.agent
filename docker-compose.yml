@@ -107,9 +107,16 @@ services:
       MINIO_BUCKET: ${MINIO_BUCKET:-runner-uploads}
       MINIO_SECURE: "false"
       JWT_SECRET: ${JWT_SECRET}
-      EMERGENT_LLM_KEY: ${EMERGENT_LLM_KEY}
       TAVILY_API_KEY: ${TAVILY_API_KEY}
-      LLM_MODEL: ${LLM_MODEL:-gpt-5.2}
+      # LLM: user-owned credentials (OpenRouter is the default production
+      # provider; direct Anthropic is also supported). No Emergent key.
+      LLM_PROVIDER: ${LLM_PROVIDER:-openrouter}
+      LLM_MODEL: ${LLM_MODEL:-anthropic/claude-3.5-sonnet}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_HTTP_REFERER: ${OPENROUTER_HTTP_REFERER:-}
+      OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-Runner.ai}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
     ports:
       - "8001:8001"
@@ -139,8 +146,14 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-runneradmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-runnersecret}
       MINIO_BUCKET: ${MINIO_BUCKET:-runner-uploads}
-      EMERGENT_LLM_KEY: ${EMERGENT_LLM_KEY}
-      LLM_MODEL: ${LLM_MODEL:-gpt-5.2}
+      # LLM: user-owned credentials (see the backend service above).
+      LLM_PROVIDER: ${LLM_PROVIDER:-openrouter}
+      LLM_MODEL: ${LLM_MODEL:-anthropic/claude-3.5-sonnet}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_HTTP_REFERER: ${OPENROUTER_HTTP_REFERER:-}
+      OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-Runner.ai}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
 
   frontend:
     build:

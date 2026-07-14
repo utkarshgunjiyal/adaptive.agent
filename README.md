@@ -15,7 +15,7 @@ A private AI research and knowledge platform. Sign in, upload PDFs, and chat wit
 | Vector store          | Mongo `chunks` collection + cosine | **Qdrant**                    |
 | Object storage        | Local disk (`STORAGE_DIR`)     | **MinIO**                        |
 | Background workers    | `asyncio.create_task`          | **Celery + Redis**               |
-| LLM                   | gpt-5.2 via Emergent Universal LLM key | same                     |
+| LLM                   | User-owned key: OpenRouter (default) or Anthropic | same          |
 | Frontend              | React (CRA) + Tailwind         | same, served by nginx            |
 
 ---
@@ -76,7 +76,10 @@ sudo supervisorctl status
 | `MONGO_URL`        | MongoDB connection string                     |
 | `DB_NAME`          | Database name (`runner_ai`)                   |
 | `JWT_SECRET`       | 64-char random hex                            |
-| `EMERGENT_LLM_KEY` | Emergent Universal LLM key (gpt-5.2)          |
+| `LLM_PROVIDER`     | `openrouter` (default) \| `anthropic` \| `auto` \| `stub` |
+| `LLM_MODEL`        | Provider-compatible model id (e.g. `anthropic/claude-3.5-sonnet`) |
+| `OPENROUTER_API_KEY` | OpenRouter key (required when provider is `openrouter`) |
+| `ANTHROPIC_API_KEY`  | Anthropic key (required when provider is `anthropic`)  |
 | `TAVILY_API_KEY`   | Tavily web-search key (optional; tool marked unavailable if empty) |
 | `MAX_UPLOAD_BYTES` | Ingest size cap (default 25 MB)               |
 | `MAX_PAGES`        | Ingest page cap (default 200)                 |
@@ -95,7 +98,8 @@ Runs the full spec: Postgres, Redis, Qdrant, MinIO, backend, Celery worker, and 
 
 ```bash
 cp .env.example .env
-# Set JWT_SECRET and EMERGENT_LLM_KEY (and TAVILY_API_KEY if you want real web search).
+# Set JWT_SECRET and your LLM credentials — OPENROUTER_API_KEY (default provider)
+# or ANTHROPIC_API_KEY (and TAVILY_API_KEY if you want real web search).
 docker compose up --build -d
 
 # Health checks
@@ -199,7 +203,7 @@ Every interactive element has a `data-testid` (see `data-testid` audit in the co
 
 Runner.ai V2 completes all P0/P1/P2 items surfaced in the V1 review — see the changelog in `/app/memory/PRD.md`. Remaining wishlist:
 
-- Real embeddings provider (drop-in `services/embeddings.py`) when an OpenAI-compatible embeddings endpoint becomes available through the Emergent Universal LLM key
+- Real embeddings provider (drop-in `services/embeddings.py`) when an OpenAI-compatible embeddings endpoint is wired to the configured LLM provider
 - Redis-backed rate limiter + Celery worker deployment (already scaffolded in `docker-compose.yml`)
 - Streaming `[n]` citation reconciliation at token-level
 - OpenGraph metadata on shared-thread pages for LinkedIn / Twitter previews

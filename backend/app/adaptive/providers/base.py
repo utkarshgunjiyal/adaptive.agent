@@ -20,9 +20,9 @@ provider-specific classes:
 
     ToolCall(id, name, arguments)
 
-Because every provider (Anthropic / OpenAI / OpenRouter / Emergent) uses
-the OpenAI-compatible tool-call schema under LiteLLM (and langchain-core
-speaks the same), this envelope stays identical across providers.
+Because every provider (OpenRouter's OpenAI-compatible API and the direct
+Anthropic API) is a LangChain ``BaseChatModel`` that speaks the same
+structured tool-call protocol, this envelope stays identical across providers.
 """
 
 from __future__ import annotations

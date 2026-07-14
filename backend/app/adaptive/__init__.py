@@ -5,9 +5,9 @@ The legacy planner→execute→synthesize path stays intact in
 tool observation is returned to the LLM as a ``ToolMessage`` and the LLM
 decides the next action.
 
-Phase 1 scope (this commit):
-- provider-neutral chat-model factory (Emergent Claude Sonnet 4.5 today,
-  plus Anthropic and OpenRouter env hooks)
+Scope:
+- provider-neutral chat-model factory over user-owned credentials
+  (OpenRouter's OpenAI-compatible API or the direct Anthropic API)
 - LangGraph state graph: load_context → agent ⇄ tools → finalize
 - native bind_tools via the provider's actual tool-calling API
   (no JSON-prose emulation)

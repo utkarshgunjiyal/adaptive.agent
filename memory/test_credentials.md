@@ -12,9 +12,12 @@ Every user has isolated threads, documents, and adaptive runs.
 
 ## Provider secrets
 
-- `EMERGENT_LLM_KEY` — set in `/app/backend/.env`. Used by both the legacy
-  synthesizer and the adaptive Emergent provider adapter. Universal key
-  routes Claude Sonnet 4.5 through LiteLLM under the hood.
+- LLM credentials — set in `/app/backend/.env`. Runner.ai uses user-owned
+  credentials: `OPENROUTER_API_KEY` (default provider, OpenAI-compatible) or
+  `ANTHROPIC_API_KEY` (direct Anthropic). Both the legacy synthesizer and the
+  adaptive runtime go through the same provider factory. With no key set,
+  `LLM_PROVIDER` resolves to `stub` (deterministic, no network) so tests that
+  don't require a live model still run.
 - `TAVILY_API_KEY` — set in `/app/backend/.env`. Optional; when unset
   the `web_search` tool is registered but reports `unavailable`.
 
