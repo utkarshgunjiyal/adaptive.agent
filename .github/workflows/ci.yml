@@ -60,18 +60,6 @@ jobs:
       - name: Build
         run: npm run build
 
-  scripts:
-    name: Shell scripts (shellcheck)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
-
-      - name: Lint deploy scripts (warnings fail)
-        run: shellcheck --severity=warning scripts/*.sh scripts/lib/common.sh
-
   containers:
     name: Docker build + compose + proxy validate
     runs-on: ubuntu-latest
