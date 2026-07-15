@@ -19,13 +19,13 @@ import pytest
 import requests
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+
 if not BASE_URL:
-    with open("/app/frontend/.env") as fh:
-        for line in fh:
-            if line.startswith("REACT_APP_BACKEND_URL="):
-                BASE_URL = line.strip().split("=", 1)[1].rstrip("/")
-                break
-assert BASE_URL, "REACT_APP_BACKEND_URL must be set"
+    pytest.skip(
+        "E2E tests require REACT_APP_BACKEND_URL and a running backend",
+        allow_module_level=True,
+    )
+
 API = f"{BASE_URL}/api"
 STREAM_TIMEOUT = 90.0
 
