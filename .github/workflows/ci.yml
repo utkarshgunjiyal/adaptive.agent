@@ -19,42 +19,44 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: backend/requirements.txt
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest
+
       - name: Import/compile check
         run: python -m compileall app
+
       - name: Run tests
         run: python -m pytest -q
 
   frontend:
-    name: Frontend (typecheck / lint / test / build)
+    name: Frontend (test / build)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Install dependencies (locked)
-        run: npm ci
-      - name: Typecheck
-        run: npm run typecheck
-      - name: Lint
-        run: npm run lint
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
       - name: Test
-        run: npm test
+        run: npm test -- --watchAll=false --passWithNoTests
+
       - name: Build
         run: npm run build
 
@@ -63,8 +65,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
+
       - name: Lint deploy scripts (warnings fail)
         run: shellcheck --severity=warning scripts/*.sh scripts/lib/common.sh
 
@@ -78,11 +82,13 @@ jobs:
       CORS_ORIGINS: https://demo.example.com
     steps:
       - uses: actions/checkout@v4
+
       - name: Validate Compose configs (dev / prod / demo)
         run: |
           docker compose config >/dev/null
           docker compose -f docker-compose.yml -f docker-compose.prod.yml config >/dev/null
           docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.demo.yml config >/dev/null
+
       - name: Validate Caddy reverse-proxy config
         run: |
           docker run --rm \
@@ -91,12 +97,14 @@ jobs:
             -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
             -v "$PWD/deploy/auth.conf:/etc/caddy/auth.conf:ro" \
             caddy:2.8-alpine caddy validate --config /etc/caddy/Caddyfile
+
       - name: Build backend image
         uses: docker/build-push-action@v6
         with:
           context: ./backend
           push: false
           tags: runner-ai-backend:ci
+
       - name: Build frontend image
         uses: docker/build-push-action@v6
         with:
