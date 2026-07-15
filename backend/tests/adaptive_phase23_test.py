@@ -24,11 +24,10 @@ import requests
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
 
-if not BASE_URL:
-    pytest.skip(
-        "E2E tests require REACT_APP_BACKEND_URL and a running backend",
-        allow_module_level=True,
-    )
+pytestmark = pytest.mark.skipif(
+    not BASE_URL,
+    reason="E2E tests require REACT_APP_BACKEND_URL and a running backend",
+)
 
 API = f"{BASE_URL}/api"
 STREAM_TIMEOUT = 120.0
