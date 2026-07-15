@@ -1,9 +1,12 @@
 """Document upload + list + retry routes.
 
-Files are validated, stored on disk, then a Mongo job is created and enqueued
-onto ``asyncio`` background tasks. In the Docker Compose "production" stack
-the same job payload is pushed onto Redis and consumed by a Celery worker
-(``worker.py``). The API layer is identical either way.
+Files are validated, stored, then a Mongo job is created and dispatched. With
+``JOB_QUEUE_BACKEND=inline`` (preview/default) ingestion runs as an in-process
+``asyncio`` task. With ``JOB_QUEUE_BACKEND=redis`` (Docker Compose production
+stack) the job payload is pushed onto the Redis queue and consumed by the
+dedicated worker process (``python -m app.worker``). The API layer is
+identical either way, and a Redis dispatch failure falls back to inline so an
+upload is never silently dropped.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ from app.auth import get_current_user
 from app.config import settings
 from app.db import get_db
 from app.models import DocumentPublic, DocumentStatus, JobPublic, UploadResponse
-from app.services import ingest, storage
+from app.services import ingest, job_queue, storage
 
 router = APIRouter(prefix="/api", tags=["documents"])
 _PDF_MAGIC = b"%PDF-"
@@ -62,7 +65,13 @@ def _job_public(job: dict) -> JobPublic:
 
 
 async def _kick_off_ingest(user_id: str, document_id: str, job_id: str) -> None:
-    """Fire-and-forget background ingestion task."""
+    """Dispatch background ingestion: Redis queue when configured, else an
+    in-process asyncio task (also the fallback if the enqueue fails)."""
+    if job_queue.enabled():
+        if await job_queue.enqueue_ingest(
+            user_id=user_id, document_id=document_id, job_id=job_id
+        ):
+            return
     asyncio.create_task(ingest.ingest_document(
         user_id=user_id, document_id=document_id, job_id=job_id
     ))

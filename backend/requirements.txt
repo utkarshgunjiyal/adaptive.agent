@@ -6,6 +6,8 @@ pydantic==2.9.2
 # pinned to satisfy pydantic 2.9.2's exact pydantic-core requirement (see boot failure log 2026-07-14)
 pydantic-core==2.23.4
 pydantic-settings==2.5.2
+# EmailStr fields in app.models require the email-validator extra.
+email-validator==2.2.0
 python-dotenv==1.0.1
 python-multipart==0.0.12
 bcrypt==4.2.0
@@ -16,9 +18,14 @@ numpy==2.1.2
 apscheduler==3.11.3
 rank_bm25==0.2.2
 reportlab==5.0.0
-emergentintegrations
+# Redis job queue (JOB_QUEUE_BACKEND=redis) + dedicated worker (app.worker).
+redis==5.2.1
 # Adaptive runtime (Phase 1+)
 langgraph==0.2.76
 langgraph-checkpoint==2.1.2
 langgraph-checkpoint-mongodb==0.2.1
 langchain-core==0.3.86
+# LLM providers (user-owned credentials): OpenRouter via the OpenAI-compatible
+# client, and the direct Anthropic API.
+langchain-openai==0.3.35
+langchain-anthropic==0.3.22

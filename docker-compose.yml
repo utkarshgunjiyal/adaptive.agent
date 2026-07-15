@@ -1,15 +1,27 @@
 # Runner.ai — full Docker Compose stack.
 #
-# Brings up the "production" architecture Runner.ai targets: Postgres,
-# Redis, Qdrant, MinIO, the backend API, a Celery worker for ingestion,
-# and the frontend served by nginx.
+# Brings up the "production" architecture Runner.ai targets: MongoDB (primary
+# datastore), Postgres, Redis, Qdrant, MinIO, the backend API, a Redis-queue
+# background worker for ingestion (`python -m app.worker`), and the frontend
+# served by nginx.
 #
 # The K8s preview build uses a simplified stack (MongoDB + in-process
 # background tasks + in-memory vector store) and does NOT use this file.
 
-version: "3.9"
-
 services:
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -86,6 +98,8 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
+      mongodb:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:
@@ -96,9 +110,12 @@ services:
         condition: service_completed_successfully
     environment:
       APP_ENV: production
+      MONGO_URL: ${MONGO_URL:-mongodb://mongodb:27017}
+      DB_NAME: ${DB_NAME:-runner_ai_portable}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-runner}:${POSTGRES_PASSWORD:-runner}@postgres:5432/${POSTGRES_DB:-runner_ai}
       REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/1
+      JOB_QUEUE_BACKEND: redis
+      STORAGE_DIR: /data/storage
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-runner_chunks}
       MINIO_ENDPOINT: minio:9000
@@ -107,10 +124,19 @@ services:
       MINIO_BUCKET: ${MINIO_BUCKET:-runner-uploads}
       MINIO_SECURE: "false"
       JWT_SECRET: ${JWT_SECRET}
-      EMERGENT_LLM_KEY: ${EMERGENT_LLM_KEY}
       TAVILY_API_KEY: ${TAVILY_API_KEY}
-      LLM_MODEL: ${LLM_MODEL:-gpt-5.2}
+      # LLM: user-owned credentials (OpenRouter is the default production
+      # provider; direct Anthropic is also supported). No Emergent key.
+      LLM_PROVIDER: ${LLM_PROVIDER:-openrouter}
+      LLM_MODEL: ${LLM_MODEL:-anthropic/claude-3.5-sonnet}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_HTTP_REFERER: ${OPENROUTER_HTTP_REFERER:-}
+      OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-Runner.ai}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
+    volumes:
+      - storage_data:/data/storage
     ports:
       - "8001:8001"
 
@@ -119,8 +145,11 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     restart: unless-stopped
-    command: ["celery", "-A", "app.worker", "worker", "--loglevel=info"]
+    # Redis-queue consumer running the real ingestion pipeline (app/worker.py).
+    command: ["python", "-m", "app.worker"]
     depends_on:
+      mongodb:
+        condition: service_healthy
       redis:
         condition: service_healthy
       postgres:
@@ -131,16 +160,29 @@ services:
         condition: service_completed_successfully
     environment:
       APP_ENV: production
+      MONGO_URL: ${MONGO_URL:-mongodb://mongodb:27017}
+      DB_NAME: ${DB_NAME:-runner_ai_portable}
+      JWT_SECRET: ${JWT_SECRET}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-runner}:${POSTGRES_PASSWORD:-runner}@postgres:5432/${POSTGRES_DB:-runner_ai}
-      CELERY_BROKER_URL: redis://redis:6379/1
+      REDIS_URL: redis://redis:6379/0
+      JOB_QUEUE_BACKEND: redis
+      STORAGE_DIR: /data/storage
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-runner_chunks}
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-runneradmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-runnersecret}
       MINIO_BUCKET: ${MINIO_BUCKET:-runner-uploads}
-      EMERGENT_LLM_KEY: ${EMERGENT_LLM_KEY}
-      LLM_MODEL: ${LLM_MODEL:-gpt-5.2}
+      # LLM: user-owned credentials (see the backend service above).
+      LLM_PROVIDER: ${LLM_PROVIDER:-openrouter}
+      LLM_MODEL: ${LLM_MODEL:-anthropic/claude-3.5-sonnet}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_HTTP_REFERER: ${OPENROUTER_HTTP_REFERER:-}
+      OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-Runner.ai}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - storage_data:/data/storage
 
   frontend:
     build:
@@ -155,7 +197,9 @@ services:
       REACT_APP_BACKEND_URL: http://localhost:8001
 
 volumes:
+  mongo_data:
   postgres_data:
   redis_data:
   qdrant_data:
   minio_data:
+  storage_data:
