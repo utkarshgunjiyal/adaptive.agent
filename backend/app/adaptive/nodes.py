@@ -37,7 +37,7 @@ from app.adaptive.policy import (
 )
 from app.adaptive.providers import get_chat_provider
 from app.adaptive.state import AdaptiveState
-from app.adaptive.tool_bindings import get_binding, schemas_for
+from app.adaptive.tool_bindings import all_names, get_binding, schemas_for
 from app.db import get_db
 from app.services import thread_service
 from app.services.thread_summary import get_context_for_run
@@ -118,7 +118,15 @@ async def load_context(state: AdaptiveState) -> dict[str, Any]:
 async def select_capabilities(state: AdaptiveState) -> dict[str, Any]:
     if state.get("bound_tools"):
         return {}
-    tools = initial_tools(state["user_message"])
+
+    # Keep every read-only tool available. Capability keyword matching was
+    # excluding required sources from multi-source and follow-up requests.
+    tools = all_names() - {"import_arxiv_paper"}
+
+    # Preserve the approval-gated write tool only for explicit import requests.
+    if "import_arxiv_paper" in initial_tools(state["user_message"]):
+        tools.add("import_arxiv_paper")
+
     log.info("select_capabilities initial=%s", sorted(tools))
     return {"bound_tools": tools}
 
